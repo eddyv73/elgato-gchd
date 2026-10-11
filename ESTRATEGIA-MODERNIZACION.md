@@ -86,8 +86,10 @@ y Clang 18 aparecen **defectos reales**:
 | `bitRateMode` sin inicializar | `gchd/transcoder.cpp:457` | media |
 | `ret` sin inicializar | `main.cpp:726` | media |
 | Destructor no virtual en jerarquía polimórfica | `gchd/psi_descriptors.hpp` (11 clases) | latente |
+| `std::modf` con los nombres invertidos: todo nivel H.264 con decimal se degrada | `gchd/settings.cpp:538` | **cierta** |
+| Constructor que ignora su parámetro `currentIndicator` | `gchd/psi_syntax.hpp:31` | media |
 
-Los dos primeros merecen detalle:
+Tres merecen detalle:
 
 **1. Desreferencia de puntero nulo, no "posible" sino segura** (`psi_pmt.cpp:111`):
 
@@ -102,7 +104,24 @@ ejecución que entre en ese bucle desreferencia un nulo. Atenuante: el driver **
 tablas MPEG-TS, no las parsea, así que la ruta puede estar muerta en la práctica — pero
 está en el árbol, compilada, lista para dispararse si alguien usa el parser.
 
-**2. Decisión de cargar firmware sobre memoria sin inicializar** (`configure.cpp`):
+**2. Todo nivel H.264 con decimal se aplica mal** (`settings.cpp:538`). `std::modf(x, &p)`
+devuelve la parte **fraccionaria** y escribe la **entera** en `p`. El código asigna el
+retorno a una variable llamada `integerF` y la salida a otra llamada `fractionF`, con los
+nombres al revés:
+
+```cpp
+integerF = std::modf(value, &fractionF);       // integerF recibe la FRACCION
+unsigned integer  = (unsigned) integerF;        // ...y se usa como entero
+unsigned fraction = (int) round(fractionF/.1);  // ...y la parte entera como decimal
+return integer*10 + fraction;
+```
+
+Para niveles enteros el resultado coincide **por casualidad** (4.0 -> 40). Para cualquier
+nivel con decimal se degrada en silencio al `.0`: **3.1 -> 30, 4.1 -> 40, 2.2 -> 20**.
+Los niveles 2.1, 2.2 y 3.1 están en la lista de válidos de `setH264Level`, así que se
+aceptan sin queja y se aplican mal. Verificado con un programa mínimo aparte.
+
+**3. Decisión de cargar firmware sobre memoria sin inicializar** (`configure.cpp`):
 `state` se declara sin valor y sólo se asigna dentro de las ramas
 `GameCaptureHD` / `GameCaptureHDNew`. Si `deviceType_` no es ninguna de las dos, el
 `if (state == 0x0000)` que decide **si se carga el firmware** lee basura de pila. Clang
@@ -110,7 +129,7 @@ lo reporta como `used uninitialized whenever 'if' condition is false`.
 
 **Conclusión revisada.** El veredicto de fondo no cambia — no hay gestión manual de
 memoria, no es un rescate de código legacy, y el repo sigue siendo recuperable. Pero
-**no está "notablemente sano"**: tiene 8 defectos identificados, dos de ellos ciertos,
+**no está "notablemente sano"**: tiene 10 defectos identificados, tres de ellos ciertos,
 y uno en la ruta de carga de firmware. Esto **sube el valor de la Fase 1**, no lo baja:
 son hallazgos que una CI con optimización activada habría detectado en 2016.
 
@@ -226,10 +245,15 @@ paso manual. Es una restricción **legal**, no técnica: no se resuelve con inge
 - **Semántica desconocida.** Los registros son ingeniería inversa. Un refactor que
   "limpie" lo que no entiende rompe el dispositivo de formas no detectables sin hardware.
   Regla: cambiar estructura, nunca valores ni orden de las secuencias USB.
-- **Soporte macOS no verificado.** El README promete macOS, pero hay **cero** guardas
-  `__APPLE__`/`#ifdef` de plataforma y el código es POSIX puro
-  (`getopt_long_only` GNU, `sigaction`, `flock`, `unistd.h`). Trátalo como *feature nueva*,
-  no como regresión a arreglar.
+- **macOS compila, pero sigue sin estar verificado funcionalmente.** Hallazgo de la
+  Fase 0: lo único que impedía compilar en macOS era el include mal escrito
+  `<libusb-1.0/libusb.h>` en lugar de `<libusb.h>`. Arreglado eso, **el árbol compila
+  limpio con Clang en macOS-latest** y los tests pasan, aun sin una sola guarda
+  `__APPLE__` en todo el árbol y usando `getopt_long_only`, `sigaction`, `flock` y
+  `unistd.h` (las BSD, y por tanto macOS, proveen `getopt_long_only`). Esto hace el
+  soporte macOS mucho más plausible de lo que parecía, pero **compilar no es funcionar**:
+  queda sin verificar porque requiere dispositivo. El job de macOS en CI es informativo
+  justo por eso.
 - **Upstream muerto.** `tolga9009/elgato-gchd` también paró en 2016. No hay a quién
   mandar PRs ni de quién traer fixes: **este fork es tuyo para siempre.** No existe la
   opción "esperar a que upstream lo arregle".
@@ -257,18 +281,41 @@ El orden no es negociable: **la red de seguridad va antes del refactor.**
 4. ✅ GitHub Actions: matriz `ubuntu × {gcc, clang}` bloqueante + `macos` informativo
    (`continue-on-error`), con smoke test del binario y reporte de warnings al job
    summary. Compila en `RelWithDebInfo` a propósito (ver §2.3).
-5. ⏸ Decisión sobre `src/gui/`: **pendiente, es del equipo.** Queda documentada en el
-   CMake raíz y sin construir, como estaba.
+5. ✅ Decisión sobre `src/gui/`: **se conserva.** El equipo quiere que la GUI acabe
+   funcionando, así que no se elimina. Pasa a ser un **workstream aparte**, fuera del
+   alcance de las Fases 1-4: hoy son 47 LOC de stub de Qt Designer y rehacerla es un
+   proyecto propio, que además depende de que el driver esté verificado primero.
+   Sigue sin construirse y documentada en el CMake raíz.
 
 **Resultado:** compila con GCC 13 y Clang 18, 0 errores, inmune a CMake 4, CI en verde.
 **Subproducto:** la CI con optimización activada destapó los 8 defectos de §2.3.
 
-### Fase 1 — Red de seguridad · ~1-2 semanas · sin hardware
-1. Tests unitarios sobre la capa pura (GoogleTest o Catch2 vía `FetchContent`):
-   - `psi_*`: tests de golden file — las tablas MPEG-TS tienen salida binaria
-     determinista y verificable contra la norma ITU/ISO. **El mejor ROI del proyecto.**
-   - `settings.cpp`: parseo de resolución, bitrate (`max:avg:min`), niveles H.264.
-   - `utility.cpp`: `byteify`/`debyteify` big-endian, trims.
+### Fase 1 — Red de seguridad · ~1-2 semanas · sin hardware · 🔄 EN CURSO
+1. 🔄 Tests unitarios sobre la capa pura (Catch2 v3.9.1 vía `FetchContent`).
+   **Hecho:** `gchd_core`, librería estática con los 9 archivos que no tocan
+   hardware, separada para que los tests enlacen sin libusb ni dispositivo; si
+   alguien mete una dependencia de hardware ahí, el target de tests deja de
+   compilar, que es justo el aviso que queremos. **33 tests, 171 asserts, en verde**,
+   más un job de CI con ASan+UBSan.
+   - `utility.cpp`: `byteify`/`debyteify` big-endian (orden de bytes explícito,
+     truncado por límite, ida y vuelta con valores frontera), `findFraction`,
+     `split`, trims, y los 7 casos documentados de `splitIPAddressAndPort`.
+   - `settings.cpp`: `convertResolution` en ambos sentidos y su inversa, defaults de
+     `InputSettings`, aritmética mbps↔kbps de bitrate constante y variable,
+     `getRealMaxBitRateKbps` por modo, niveles y perfiles H.264.
+   - `psi_*`: PAT byte a byte contra ISO/IEC 13818-1, validación de rangos de PID,
+     ida y vuelta pack/unpack, y el **test de contrato tamaño/empaquetado** descrito
+     abajo.
+   **Pendiente:** cobertura de PMT, SIT y descriptores, que son las clases con más
+   lógica de serialización y las que aún no tienen red.
+
+   El test de mayor valor es el de contrato: verifica que `pack()` avanza el iterador
+   **exactamente** `calculateSize()` bytes. Como `PSI_Data::bytes()` dimensiona el
+   vector con `calculateSize()` y `pack()` escribe avanzando un puntero crudo, una
+   desincronización de un byte es un desbordamiento de heap. Comprobar el avance lo
+   detecta de forma determinista, sin depender de que haya un sanitizer activo.
+   Resultado actual: PAT, cabecera y sección de sintaxis **cumplen** su contrato,
+   verificado también bajo ASan.
 2. **Migrar `byteify`/`debyteify` a `std::span`** (ver §2.4). Cierra la clase de bug de
    desbordamiento de heap en los 25 call sites sin cota, con el compilador localizando
    cada uno. Añadir `assert` de que `pack()` avanza exactamente `calculateSize()` bytes.
@@ -364,9 +411,11 @@ No es un argumento vacío; hay tres ventajas reales:
    escribir fuera de rango es un panic determinista, no corrupción de heap silenciosa.
 2. **Multiplataforma real.** `nusb` es USB en Rust puro, sin dependencia de C, con soporte
    Linux / Windows / macOS / Android y transferencias control, bulk e interrupt — justo lo
-   que usa este driver. Eliminaría `libusb` + `pkg-config` + `getopt_long_only` (GNU) +
-   POSIX a pelo, que es lo que hoy hace que el soporte macOS prometido en el README sea
-   ficción (cero guardas de plataforma en todo el árbol).
+   que usa este driver. Eliminaría `libusb` + `pkg-config` + la dependencia de POSIX.
+   **Atenuante importante, medido en la Fase 0:** este argumento era más fuerte sobre el
+   papel que en la realidad. Tras corregir un include de una línea, el árbol en C++
+   **ya compila y pasa los tests en macOS**, así que la ventaja de `nusb` se reduce a
+   Windows y a no depender de una librería de C, no a "hacer posible macOS".
 3. **Cadena de herramientas.** `cargo test` / `clippy` / `cargo build` es una historia
    mucho más amable para un equipo con perfil .NET/devops que CMake + CTest + clang-tidy
    + pkg-config.

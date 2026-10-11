@@ -71,6 +71,9 @@ jobs:
             exit 1
           fi
 
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
       - name: Warning report
         if: always()
         run: |
@@ -82,6 +85,31 @@ jobs:
             grep 'warning:' build.log | sort -u || echo '(ninguno)'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  sanitizers:
+    name: linux / asan+ubsan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libusb-1.0-0-dev pkg-config
+
+      # Las clases PSI calculan su tamano y lo empaquetan por separado, con
+      # escrituras a traves de puntero crudo. ASan es lo que convierte un
+      # desbordamiento silencioso en un fallo de test.
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DGCHD_SANITIZE=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        env:
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir build --output-on-failure
 
   macos:
     name: macos / clang (informativo)
@@ -102,3 +130,6 @@ jobs:
 
       - name: Build
         run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

@@ -6,6 +6,7 @@
  */
 
 #include "settings.hpp"
+#include <cstdint>
 #include <cmath>
 #include <iostream>
 #include <sstream>

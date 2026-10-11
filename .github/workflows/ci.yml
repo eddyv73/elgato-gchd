@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: linux / ${{ matrix.compiler }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: gcc
+            cc: gcc
+            cxx: g++
+          - compiler: clang
+            cc: clang
+            cxx: clang++
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libusb-1.0-0-dev pkg-config
+
+      # RelWithDebInfo a propósito: los análisis de flujo de datos de GCC/Clang
+      # (-Wmaybe-uninitialized, -Wnonnull) sólo corren con el optimizador activo.
+      # Un build sin optimizar oculta defectos reales.
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      # set -o pipefail es obligatorio: el shell por defecto de Actions es
+      # `bash -e`, sin pipefail, asi que el estado de salida seria el de tee
+      # y un build roto pasaria como verde.
+      - name: Build
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build --parallel 2>&1 | tee build.log
+
+      # Sin dispositivo conectado, gchd debe salir 1 con un mensaje claro. Lo que
+      # se verifica es que degrada limpio: un codigo >=128 seria una senal
+      # (SIGSEGV/SIGABRT) y es precisamente lo que no debe pasar.
+      - name: Smoke test
+        shell: bash
+        run: |
+          ./build/src/gchd -h
+          set +e
+          out=$(./build/src/gchd 2>&1)
+          rc=$?
+          set -e
+          echo "$out"
+          if [ "$rc" -ne 1 ]; then
+            echo "::error::esperaba exit 1 sin dispositivo, obtenido $rc"
+            exit 1
+          fi
+          if ! grep -q 'Unable to find a supported device' <<<"$out"; then
+            echo "::error::mensaje inesperado al no encontrar dispositivo"
+            exit 1
+          fi
+
+      - name: Warning report
+        if: always()
+        run: |
+          count=$(grep -c 'warning:' build.log || true)
+          {
+            echo "### ${{ matrix.compiler }}: ${count} warnings"
+            echo ''
+            echo '```'
+            grep 'warning:' build.log | sort -u || echo '(ninguno)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  macos:
+    name: macos / clang (informativo)
+    runs-on: macos-latest
+    # El README promete soporte macOS, pero el árbol no tiene ni una guarda de
+    # plataforma y usa getopt_long_only (extensión GNU). Este job documenta el
+    # estado real sin bloquear la rama: pasa a obligatorio cuando macOS sea un
+    # objetivo asumido, no antes.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install libusb pkg-config
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: cmake --build build --parallel

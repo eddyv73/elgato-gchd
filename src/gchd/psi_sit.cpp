@@ -39,8 +39,7 @@ void SIT_Data::pack(std::vector<uint8_t> &outputData,
 	}
 	uint16_t outputValue=(0xf<<12) | transmissionInfoLoopLength;
 
-	uint8_t *dataPointer = &(*offset);
-	Utility::byteify<uint16_t>( dataPointer,  outputValue );
+	Utility::byteify<uint16_t>( Utility::remaining(outputData, offset),  outputValue );
 	offset+=2;
 
 	//Output transmission parameters.
@@ -64,10 +63,9 @@ void SIT_Data::unpack( const std::vector<uint8_t> &inputData,
 		throw PSI_FormatException("PSI SIT table needs to be at least 2 bytes.");
 	}
 
-	const uint8_t *dataPointer=&(*offset);
 	std::vector<uint8_t>::const_iterator endOfDataOffset=offset+size;
 
-	uint16_t value=Utility::debyteify<uint16_t>( dataPointer );
+	uint16_t value=Utility::debyteify<uint16_t>( Utility::remaining(inputData, offset) );
 
 	//This is a strict checker used to check itself, so
 	//we don't ignore reserved bits.

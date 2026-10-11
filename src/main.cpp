@@ -122,7 +122,10 @@ void help(std::string name, bool full) {
 	}
 }
 
-void option_error(std::string name, std::string option, std::string error) {
+//Nota: parameter_unknown() si usa 'name' para imprimir "Try '<name>' -h".
+//Estas dos no lo hacen. La asimetria parece un olvido, pero cambiar la salida
+//al usuario es decision de producto, no de esta limpieza.
+void option_error([[maybe_unused]] std::string name, std::string option, std::string error) {
 	std::cerr << "Invalid option `" << option << "':" << std::endl;
 	std::cerr << error << std::endl;
 }
@@ -139,7 +142,7 @@ void parameter_unknown(std::string name, std::string option, const std::vector<s
 	std::cerr << "Try '" << name << " -h' for more information." << std::endl;
 }
 
-void parameter_error(std::string name, std::string option, std::string error) {
+void parameter_error([[maybe_unused]] std::string name, std::string option, std::string error) {
 	std::cerr << "Invalid argument '" << optarg << "' for '" << option << "':" << std::endl;
 	std::cerr << error << std::endl;
 }
@@ -224,6 +227,13 @@ int main(int argc, char *argv[]) {
 	bool outputFormatSet=false;
 
 
+	//GAP CONOCIDO: 'pid' se asigna desde -P/-pid (abajo) pero nunca se lee.
+	//Process::createPid() existe y no se llama en ningun sitio, asi que la
+	//opcion documentada en la ayuda no hace nada y el cerrojo que evita dos
+	//instancias simultaneas es codigo muerto. Conectarlo cambia el
+	//comportamiento en ejecucion, asi que es una decision de producto, no de
+	//esta limpieza.
+	//NOLINTNEXTLINE(bugprone-unused-local-non-trivial-variable)
 	std::string pid = "/var/run/gchd.pid";
 
 	// output format, default is set to FIFO
@@ -716,7 +726,8 @@ int main(int argc, char *argv[]) {
 		Streamer streamer(&gchd, &process);
 
 		// enable output
-		int ret;
+		//-1 para que un formato no contemplado se trate como fallo.
+		int ret = -1;
 
 		switch (format) {
 			case Format::Disk: ret = streamer.disk.enable(output); break;

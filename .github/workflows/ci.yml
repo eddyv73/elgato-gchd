@@ -10,6 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  DEPS: libusb-1.0-0-dev pkg-config
+
 jobs:
   linux:
     name: linux / ${{ matrix.compiler }}
@@ -33,13 +36,14 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libusb-1.0-0-dev pkg-config
+          sudo apt-get install -y --no-install-recommends $DEPS
 
-      # RelWithDebInfo a propósito: los análisis de flujo de datos de GCC/Clang
-      # (-Wmaybe-uninitialized, -Wnonnull) sólo corren con el optimizador activo.
-      # Un build sin optimizar oculta defectos reales.
+      # RelWithDebInfo a proposito: los analisis de flujo de datos de GCC y
+      # Clang (-Wmaybe-uninitialized, -Wnonnull) solo corren con el optimizador
+      # activo. Un build sin optimizar da verde y oculta defectos reales: asi
+      # se encontraron varios de los que arreglo la Fase 1.
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGCHD_WERROR=ON
 
       # set -o pipefail es obligatorio: el shell por defecto de Actions es
       # `bash -e`, sin pipefail, asi que el estado de salida seria el de tee
@@ -50,8 +54,8 @@ jobs:
           set -o pipefail
           cmake --build build --parallel 2>&1 | tee build.log
 
-      # Sin dispositivo conectado, gchd debe salir 1 con un mensaje claro. Lo que
-      # se verifica es que degrada limpio: un codigo >=128 seria una senal
+      # Sin dispositivo conectado, gchd debe salir 1 con un mensaje claro. Lo
+      # que se verifica es que degrada limpio: un codigo >=128 seria una senal
       # (SIGSEGV/SIGABRT) y es precisamente lo que no debe pasar.
       - name: Smoke test
         shell: bash
@@ -76,6 +80,7 @@ jobs:
 
       - name: Warning report
         if: always()
+        shell: bash
         run: |
           count=$(grep -c 'warning:' build.log || true)
           {
@@ -95,13 +100,13 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libusb-1.0-0-dev pkg-config
+          sudo apt-get install -y --no-install-recommends $DEPS
 
-      # Las clases PSI calculan su tamano y lo empaquetan por separado, con
-      # escrituras a traves de puntero crudo. ASan es lo que convierte un
-      # desbordamiento silencioso en un fallo de test.
+      # Las clases PSI calculan su tamano y lo empaquetan por separado. El test
+      # de contrato detecta la desincronizacion de forma determinista; ASan es
+      # la segunda red, para lo que ese test no cubra.
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DGCHD_SANITIZE=ON
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DGCHD_SANITIZE=ON -DGCHD_WERROR=ON
 
       - name: Build
         run: cmake --build build --parallel
@@ -111,13 +116,45 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: ctest --test-dir build --output-on-failure
 
+  static-analysis:
+    name: linux / clang-tidy + cppcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $DEPS clang-tidy cppcheck
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DGCHD_BUILD_TESTS=OFF
+
+      # El conjunto de checks esta en .clang-tidy, calibrado contra este arbol
+      # y con WarningsAsErrors. Los pocos casos que no se tocan llevan NOLINT
+      # con su justificacion en el codigo.
+      - name: clang-tidy
+        shell: bash
+        run: |
+          mapfile -t fuentes < <(find src -name '*.cpp' -not -path 'src/gui/*' | sort)
+          clang-tidy -p build "${fuentes[@]}"
+
+      - name: cppcheck
+        shell: bash
+        run: |
+          mapfile -t fuentes < <(find src -name '*.cpp' -not -path 'src/gui/*' | sort)
+          cppcheck --enable=warning,portability --inline-suppr \
+                   --std=c++20 --language=c++ --quiet \
+                   --error-exitcode=1 -I src "${fuentes[@]}"
+
   macos:
     name: macos / clang (informativo)
     runs-on: macos-latest
-    # El README promete soporte macOS, pero el árbol no tiene ni una guarda de
-    # plataforma y usa getopt_long_only (extensión GNU). Este job documenta el
-    # estado real sin bloquear la rama: pasa a obligatorio cuando macOS sea un
-    # objetivo asumido, no antes.
+    # macOS compila y pasa los tests desde que se corrigio el include de
+    # libusb, pero compilar no es funcionar: el arbol no tiene ni una guarda
+    # de plataforma y nadie ha verificado el driver en macOS con hardware.
+    # El job informa sin bloquear la rama; pasa a obligatorio cuando macOS sea
+    # un objetivo asumido, no antes.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v5

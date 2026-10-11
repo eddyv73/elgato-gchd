@@ -21,6 +21,20 @@
 class PSI_Data
 {
 	public:
+		//La jerarquia se destruye a traves de punteros a esta base
+		//(std::shared_ptr<PSI_Descriptor> en PMT y SIT), asi que el
+		//destructor tiene que ser virtual.
+		virtual ~PSI_Data() = default;
+
+		//Declarar un destructor suprime el constructor y la asignacion
+		//de movimiento implicitos. PMT_Mapping y PAT_Entry se guardan
+		//en std::vector, asi que se restauran explicitamente.
+		PSI_Data() = default;
+		PSI_Data(const PSI_Data &) = default;
+		PSI_Data &operator=(const PSI_Data &) = default;
+		PSI_Data(PSI_Data &&) = default;
+		PSI_Data &operator=(PSI_Data &&) = default;
+
 		//Overload the following 3 methods.
 		virtual int calculateSize()=0; //Abstract
 

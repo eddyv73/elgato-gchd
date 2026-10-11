@@ -1,0 +1,23 @@
+# Conjunto bloqueante, centrado en correctitud y calibrado contra este arbol.
+#
+# Deliberadamente NO se activan modernize-* ni readability-* en bloque: en un
+# arbol de ingenieria inversa de 2016 producen cientos de avisos de estilo
+# (158 de avoid-endl, 140 de const-correctness) que ahogan los hallazgos
+# reales. Se pueden abordar por separado, con su propia decision.
+#
+# Las exclusiones puntuales estan justificadas:
+#   narrowing-conversions  las tablas de registros convierten anchos a
+#                          proposito en todo el arbol.
+#   branch-clone           ramas de secuencias USB deliberadamente iguales.
+#   pro-type-member-init   da falsos positivos cuando el constructor
+#                          inicializa en el cuerpo en vez de en la lista.
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-branch-clone
+
+WarningsAsErrors: '*'
+HeaderFilterRegex: 'src/.*\.hpp$'
+FormatStyle: none

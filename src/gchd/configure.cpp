@@ -8,6 +8,7 @@
 #include <vector>
 #include <cmath>
 #include <iostream>
+#include <stdexcept>
 #include "../gchd.hpp"
 
 
@@ -63,6 +64,14 @@ void GCHD::configureDevice()
 			write_config<uint16_t>(SCMD_STATE_CHANGE_COMPLETE, 0x0004);
 		}
 	}
+	else
+	{
+		//DeviceType tiene mas valores (Unknown, GameCaptureHD60,
+		//GameCaptureHD60S). Sin esta rama, 'state' se quedaba sin
+		//inicializar y la decision de cargar el firmware se tomaba
+		//sobre basura de pila.
+		throw std::logic_error( "Unsupported device." );
+	}
 	if( state == 0x0000) //We have to load the flash
 	{
 		// load "idle" firmware
@@ -116,9 +125,14 @@ void GCHD::configureDevice()
 		//Get magic number requested from port 0x33 last state.
 		//Convert 3 bytes into one 24 bit number.
 		deviceModeMagic=
-				Utility::debyteify<uint32_t>(input.data(), 3);
+				Utility::debyteify<uint32_t>(input, 3);
 
 
+		//Los valores son magic numbers que devuelve el dispositivo, no un
+		//enum. Un 'default' que lance podria romper un dispositivo que
+		//hoy funciona, y no hay forma de verificarlo sin hardware, asi
+		//que se deja tal cual hasta tener el arnes de la Fase 2.
+		//NOLINTNEXTLINE(bugprone-switch-missing-default-case)
 		switch( deviceModeMagic ) {
 			case 0x334455: //First device magic number we read back,
 				//We loop on this till it transitions to 0x27f97b
@@ -231,7 +245,7 @@ void GCHD::configureDevice()
 		input=mailRead( 0x33, 3 ); /* read 3 bytes from 0x33 */
 		enableAnalogInput();
 		deviceModeMagic=
-				Utility::debyteify<uint32_t>(input.data(), 3);
+				Utility::debyteify<uint32_t>(input, 3);
 		//In one known case a user has reported different values
 		//then our captured 0x78e045 coming back here,
 		//kueller reported on gitter that he gets back 0x7bec47
@@ -250,7 +264,7 @@ void GCHD::configureDevice()
 		mailWrite( 0x33, {0xab, 0xa9, 0x0f, 0xa4, 0x55} );
 		input=mailRead( 0x33, 3 ); /* read 3 bytes from 0x33 */
 		deviceModeMagic=
-				Utility::debyteify<uint32_t>(input.data(), 3);
+				Utility::debyteify<uint32_t>(input, 3);
 	} while( deviceModeMagic != 0x27f97b );
 
 	mailWrite( 0x33, VC{0x28, 0x28} );
@@ -624,7 +638,7 @@ void GCHD::configureDevice()
 		input=mailRead( 0x33, 3 ); /* read 3 bytes from 0x33 */
 		enableAnalogInput();
 		deviceModeMagic=
-				Utility::debyteify<uint32_t>(input.data(), 3);
+				Utility::debyteify<uint32_t>(input, 3);
 		//In one known case a user has reported different values
 		//then our captured 0x78e045 coming back here,
 		//kueller reported on gitter that he gets back 0x7bec47,
@@ -1287,6 +1301,17 @@ void GCHD::configureCommonBlockB2()
 		mailWrite( 0x4c, VC{0x0d, 0xc8} );
 	}
 
+	//SOSPECHA SIN RESOLVER, para la Fase 2.
+	//
+	//Aqui se lee 'status' y acto seguido la mascara se calcula sobre
+	//'value', no sobre 'status'. Siete lineas mas arriba la estructura
+	//paralela si hace 'mask = status & 0x10'. Parece una copia-pega mal
+	//terminada, pero cambiarlo altera los bytes que se envian al
+	//dispositivo y no hay forma de comprobar cual de las dos variantes es
+	//la correcta sin el aparato delante. Se deja como esta, marcado, y se
+	//resuelve con el arnes de record/replay: comparando la secuencia USB
+	//real contra una grabacion se vera cual de las dos coincide.
+	//NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
 	status=mailRead( 0x33, 1 )[0];
 	mask=value & 0x10;
 	mailWrite( 0x4c, VC{0x0e, (uint8_t) (mask | 0x65)} );

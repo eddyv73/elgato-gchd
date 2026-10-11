@@ -19,7 +19,7 @@ add_library(gchd_core STATIC
 	gchd/psi_syntax.cpp
 	gchd/psi_table_header.cpp)
 
-target_compile_features(gchd_core PUBLIC cxx_std_17)
+target_compile_features(gchd_core PUBLIC cxx_std_20)
 target_include_directories(gchd_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(gchd_core PRIVATE gchd_warnings)
 
@@ -40,7 +40,7 @@ add_executable(${PROJECT_NAME}
 	gchd/configure_hdmi.cpp
 	gchd/transcoder.cpp)
 
-target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_17)
+target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_20)
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # PkgConfig::LIBUSB aporta también los include dirs: el árbol anterior sólo

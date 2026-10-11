@@ -8,6 +8,8 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <array>
+#include <span>
+#include <stdexcept>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -17,14 +19,14 @@
 TEST_CASE("byteify escribe en big-endian", "[utility][endian]") {
 	SECTION("uint16_t") {
 		std::array<uint8_t, 2> buffer{};
-		Utility::byteify<uint16_t>(buffer.data(), 0x1234);
+		Utility::byteify<uint16_t>(buffer, 0x1234);
 		CHECK(buffer[0] == 0x12);
 		CHECK(buffer[1] == 0x34);
 	}
 
 	SECTION("uint32_t") {
 		std::array<uint8_t, 4> buffer{};
-		Utility::byteify<uint32_t>(buffer.data(), 0xdeadbeef);
+		Utility::byteify<uint32_t>(buffer, 0xdeadbeef);
 		CHECK(buffer[0] == 0xde);
 		CHECK(buffer[1] == 0xad);
 		CHECK(buffer[2] == 0xbe);
@@ -35,7 +37,7 @@ TEST_CASE("byteify escribe en big-endian", "[utility][endian]") {
 		// El contrato documentado es "cut off high bits if limit is too small".
 		std::array<uint8_t, 4> buffer{};
 		buffer.fill(0xaa);
-		Utility::byteify<uint32_t>(buffer.data(), 0xdeadbeef, 2);
+		Utility::byteify<uint32_t>(buffer, 0xdeadbeef, 2);
 		CHECK(buffer[0] == 0xbe);
 		CHECK(buffer[1] == 0xef);
 		// Fuera del límite no debe escribir nada.
@@ -47,18 +49,18 @@ TEST_CASE("byteify escribe en big-endian", "[utility][endian]") {
 TEST_CASE("debyteify lee en big-endian", "[utility][endian]") {
 	SECTION("uint16_t") {
 		const std::array<uint8_t, 2> buffer{0x12, 0x34};
-		CHECK(Utility::debyteify<uint16_t>(buffer.data()) == 0x1234);
+		CHECK(Utility::debyteify<uint16_t>(buffer) == 0x1234);
 	}
 
 	SECTION("uint32_t") {
 		const std::array<uint8_t, 4> buffer{0xde, 0xad, 0xbe, 0xef};
-		CHECK(Utility::debyteify<uint32_t>(buffer.data()) == 0xdeadbeef);
+		CHECK(Utility::debyteify<uint32_t>(buffer) == 0xdeadbeef);
 	}
 
 	SECTION("un límite menor que el tipo lee sólo esos bytes") {
 		// Usado de verdad en configure.cpp y commands.cpp con límite 3.
 		const std::array<uint8_t, 4> buffer{0x01, 0x02, 0x03, 0xff};
-		CHECK(Utility::debyteify<uint32_t>(buffer.data(), 3) == 0x00010203);
+		CHECK(Utility::debyteify<uint32_t>(buffer, 3) == 0x00010203);
 	}
 }
 
@@ -70,8 +72,8 @@ TEST_CASE("byteify y debyteify son inversas", "[utility][endian]") {
 
 	for (const auto esperado : valores) {
 		std::array<uint8_t, 4> buffer{};
-		Utility::byteify<uint32_t>(buffer.data(), esperado);
-		CHECK(Utility::debyteify<uint32_t>(buffer.data()) == esperado);
+		Utility::byteify<uint32_t>(buffer, esperado);
+		CHECK(Utility::debyteify<uint32_t>(buffer) == esperado);
 	}
 }
 
@@ -166,4 +168,50 @@ TEST_CASE("splitIPAddressAndPort cubre los casos documentados", "[utility][net]"
 		// si la cadena está vacía.
 		CHECK_NOTHROW(Utility::splitIPAddressAndPort(address, port, ""));
 	}
+}
+
+TEST_CASE("byteify y debyteify rechazan un buffer demasiado corto", "[utility][span]") {
+	// La migración a std::span convirtió el desbordamiento silencioso en una
+	// excepción. Un puntero crudo ya ni compila como argumento.
+	SECTION("byteify no escribe más allá del span") {
+		std::array<uint8_t, 1> estrecho{};
+		CHECK_THROWS_AS(Utility::byteify<uint32_t>(estrecho, 0xdeadbeef),
+				std::out_of_range);
+		// Y no deja rastro de escritura parcial.
+		CHECK(estrecho[0] == 0);
+	}
+
+	SECTION("debyteify no lee más allá del span") {
+		const std::array<uint8_t, 2> estrecho{0x12, 0x34};
+		CHECK_THROWS_AS(Utility::debyteify<uint32_t>(estrecho), std::out_of_range);
+	}
+
+	SECTION("un límite explícito menor que el span sigue siendo válido") {
+		std::array<uint8_t, 2> buffer{};
+		CHECK_NOTHROW(Utility::byteify<uint32_t>(buffer, 0xdeadbeef, 2));
+		CHECK(buffer[0] == 0xbe);
+		CHECK(buffer[1] == 0xef);
+	}
+
+	SECTION("un span vacío rechaza cualquier escritura") {
+		CHECK_THROWS_AS(Utility::byteify<uint8_t>(std::span<uint8_t>{}, 0x01),
+				std::out_of_range);
+	}
+}
+
+TEST_CASE("remaining acota al resto del contenedor", "[utility][span]") {
+	std::vector<uint8_t> datos(5, 0);
+
+	auto todo = Utility::remaining(datos, datos.begin());
+	CHECK(todo.size() == 5);
+
+	auto parcial = Utility::remaining(datos, datos.begin() + 3);
+	CHECK(parcial.size() == 2);
+
+	// En el final devuelve un span vacío en vez de desreferenciar end().
+	auto final = Utility::remaining(datos, datos.end());
+	CHECK(final.empty());
+
+	// Y ese span vacío hace que una escritura lance en lugar de corromper.
+	CHECK_THROWS_AS(Utility::byteify<uint16_t>(final, 0x1234), std::out_of_range);
 }

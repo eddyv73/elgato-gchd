@@ -5,6 +5,8 @@
  * MIT License. For more information, see LICENSE file.
  */
 
+#include <cerrno>
+#include <cstring>
 #include <iostream>
 
 #include <fcntl.h>
@@ -99,7 +101,14 @@ void Socket::output(std::vector<unsigned char> *buffer) {
 		return;
 	}
 
-	write(fd_, buffer->data(), buffer->size());
+	const ssize_t written = write(fd_, buffer->data(), buffer->size());
+	if (written < 0) {
+		std::cerr << "Write to socket failed: " << std::strerror(errno) << std::endl;
+	} else if (static_cast<size_t>(written) != buffer->size()) {
+		//Una escritura parcial son bytes de transport stream perdidos.
+		std::cerr << "Short write to socket: " << written << " of "
+			  << buffer->size() << " bytes." << std::endl;
+	}
 }
 
 Socket::Socket() {

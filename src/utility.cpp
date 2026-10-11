@@ -96,7 +96,7 @@ namespace Utility
 		port="";
 
 		std::string input=passedInput;
-		input=trim(input); //Trim modifies original;
+		trim(input); //Modifica in situ; asignarselo a si mismo era redundante.
 		//Check for wrapped "[address]"
 		int ipBegin=0;
 		int ipEnd=0;
@@ -115,7 +115,7 @@ namespace Utility
 					address=trim(subString); //trim modifies subString
 					//return substr.
 					remainder=input.substr(ipEnd + 1);
-					remainder=trim(remainder); //trim modifies original
+					trim(remainder); //Modifica in situ.
 					break;
 				}
 				++ipEnd;

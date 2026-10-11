@@ -8,16 +8,19 @@ project(gchd
 
 # Warnings compartidos por todos los targets.
 #
-# Las tres supresiones son deuda heredada, no una decisión: silencian 27
-# unused-parameter, 27 reorder y los missing-field-initializers del árbol
-# original. Se retiran en la Fase 1, junto con -Werror. No añadir más.
+# Las supresiones heredadas (-Wno-unused-parameter, -Wno-reorder,
+# -Wno-missing-field-initializers) se retiraron en la Fase 1. No añadir mas:
+# un warning nuevo se arregla, no se silencia.
+option(GCHD_WERROR "Tratar los warnings como errores" OFF)
+
 add_library(gchd_warnings INTERFACE)
 target_compile_options(gchd_warnings INTERFACE
 	-Wall
-	-Wextra
-	-Wno-unused-parameter
-	-Wno-reorder
-	-Wno-missing-field-initializers)
+	-Wextra)
+
+if(GCHD_WERROR)
+	target_compile_options(gchd_warnings INTERFACE -Werror)
+endif()
 
 option(GCHD_BUILD_TESTS "Construir los tests unitarios" ON)
 option(GCHD_SANITIZE "Compilar con AddressSanitizer y UndefinedBehaviorSanitizer" OFF)

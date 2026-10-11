@@ -6,6 +6,10 @@
  */
 
 #include <cstdio>
+#include <cstring>
+#include <span>
+#include <stdexcept>
+#include <string>
 #include <vector>
 #include <unistd.h>
 
@@ -240,6 +244,11 @@ uint16_t GCHD::completeStateChange( uint16_t currentState,
 		} while(not changed);
 
 		//Double read here for unknown purposes.
+		//El primer almacenamiento es muerto, pero la LECTURA no: leer
+		//SCMD_STATE_READBACK_REGISTER tiene efecto en el dispositivo
+		//(dispara una transicion de estado, como documenta
+		//configure.cpp). Quitarla cambiaria la secuencia USB.
+		//NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
 		state=read_config<uint16_t>(SCMD_STATE_READBACK_REGISTER);
 		state=read_config<uint16_t>(SCMD_STATE_READBACK_REGISTER);
 		state &= 0x1f;
@@ -344,8 +353,8 @@ void GCHD::sparam(uint16_t address, uint8_t lsb, uint8_t bits, uint16_t data) {
 	//Prepare 8 byte send buffer....
 	unsigned char send[8];
 	//Do big endian conversions of 32 bit into there.
-	Utility::byteify<uint32_t>( send, outputData );
-	Utility::byteify<uint32_t>( send+4, outputMask );
+	Utility::byteify<uint32_t>( std::span<unsigned char>(send), outputData );
+	Utility::byteify<uint32_t>( std::span<unsigned char>(send).subspan(4), outputMask );
 
 
 	int returnSize =
@@ -377,7 +386,7 @@ void GCHD::slsi(uint16_t address, uint16_t data) {
 	uint8_t send[2] = {0};
 
 	// splitting up data to two 8-bit integers by bitshifting and masking
-	Utility::byteify<uint16_t>(send, data);
+	Utility::byteify<uint16_t>(std::span<uint8_t>(send), data);
 
 	int returnSize =
 			libusb_control_transfer(devh_, 0x40, SEND_H264_TRANSCODER_WORD, address, send, 2, 0);
@@ -400,15 +409,17 @@ void GCHD::transcoderTableWrite(uint16_t address, std::vector<uint8_t> &data)
 	auto offset=data.begin();
 	int leftSize=data.size();
 	while( leftSize >= 2 ) {
-		uint16_t data=Utility::debyteify<uint16_t>(&(*offset));
-		slsi( address, data );
+		//La local se llamaba igual que el parametro 'data' y lo
+		//sombreaba, lo que impedia referenciar el vector aqui.
+		uint16_t value=Utility::debyteify<uint16_t>(Utility::remaining(data, offset));
+		slsi( address, value );
 		offset+=2;
 		leftSize-=2;
 		address+=2;
 	}
 	if( leftSize == 1 ) {
-		uint16_t data = *(offset);
-		slsi( address, data<<8 );
+		uint16_t value = *(offset);
+		slsi( address, value<<8 );
 	}
 }
 
@@ -525,10 +536,32 @@ void GCHD::dlfirm(const char *file) {
 	FILE *bin;
 	bin = fopen(file, "rb");
 
+	//checkFirmware() comprueba la existencia con access(F_OK), que no dice
+	//nada sobre permisos de lectura. Sin esta comprobacion, un fichero de
+	//firmware presente pero ilegible dejaba bin en nullptr y el fseek de
+	//abajo era comportamiento indefinido.
+	if (bin == nullptr) {
+		throw std::runtime_error( std::string("Cannot open firmware file ")
+					  + file + ": " + std::strerror(errno) );
+	}
+
 	// get filesize
-	fseek(bin, 0L, SEEK_END);
-	auto filesize = ftell(bin);
-	rewind(bin);
+	if (fseek(bin, 0L, SEEK_END) != 0) {
+		fclose(bin);
+		throw std::runtime_error( std::string("Cannot seek firmware file ") + file );
+	}
+	const long filesize = ftell(bin);
+	//Un ftell fallido devuelve -1, y con filesize negativo el bucle de abajo
+	//no se ejecutaba ni una vez: se cargaban cero bytes de firmware sin que
+	//nada lo indicara.
+	if (filesize < 0) {
+		fclose(bin);
+		throw std::runtime_error( std::string("Cannot determine size of firmware file ") + file );
+	}
+	if (fseek(bin, 0L, SEEK_SET) != 0) {
+		fclose(bin);
+		throw std::runtime_error( std::string("Cannot rewind firmware file ") + file );
+	}
 
 	//Buffersizes must be divisble by 16.
 	unsigned bufferSize=16384;
@@ -545,7 +578,17 @@ void GCHD::dlfirm(const char *file) {
 			bytes_remain = bufferSize;
 		}
 
-		fread(buffer.data(), static_cast<unsigned long>(bytes_remain), 1, bin);
+		//bytes_remain puede valer 0 en la ultima iteracion, cuando el
+		//tamano del firmware es multiplo exacto del buffer, y fread con
+		//tamano 0 devuelve 0. La comprobacion se salta ese caso a
+		//proposito: la transferencia de longitud cero se mantiene tal
+		//cual, porque un paquete de longitud cero es significativo en
+		//USB y no sabemos si el dispositivo lo espera.
+		if (bytes_remain > 0 &&
+		    fread(buffer.data(), static_cast<unsigned long>(bytes_remain), 1, bin) != 1) {
+			fclose(bin);
+			throw std::runtime_error( std::string("Short read while loading firmware ") + file );
+		}
 		libusb_bulk_transfer(devh_, EP_OUT, buffer.data(), static_cast<int>(bytes_remain), &transfer, 0);
 	}
 	fclose(bin);
@@ -644,7 +687,7 @@ void GCHD::clearEnableState()
 	{
 		mailWrite( 0x33, VC{0xab, 0xa9, 0x0f, 0xa4, 0x55} );
 		read=mailRead( 0x33, 3 ); //EXPECTED {0x33, 0x44, 0x55};
-		result=Utility::debyteify<uint32_t>(read.data(),3);
+		result=Utility::debyteify<uint32_t>(read,3);
 	} while(result != 0x334455);
 }
 

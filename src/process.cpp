@@ -89,6 +89,8 @@ void Process::sigHandler(int sig) {
 		case SIGTERM:
 			setActive(false);
 			break;
+		default:
+			break;
 	}
 }
 

@@ -172,22 +172,28 @@ TEST_CASE("unsignedH264Level codifica el nivel en decimal", "[settings][h264]") 
 	CHECK(TranscoderSettings::unsignedH264Level(1.0f) == 10u);
 }
 
-// DEFECTO CONOCIDO (settings.cpp:538). std::modf(x, &p) devuelve la parte
-// fraccionaria y escribe la entera en p; el codigo asigna el retorno a
+// Regresion de settings.cpp:538. std::modf(x, &p) devuelve la parte
+// fraccionaria y escribe la entera en p; el codigo asignaba el retorno a
 // "integerF" y la salida a "fractionF", con los nombres invertidos. Para
-// niveles enteros el resultado coincide por casualidad, pero cualquier nivel
-// con decimal se degrada en silencio al .0: 3.1 -> 30, 4.1 -> 40, 2.2 -> 20.
-// Niveles como 2.1, 2.2 y 3.1 estan en la lista de validos de setH264Level,
-// asi que se aceptan y se aplican mal.
-//
-// El test esta etiquetado !shouldfail a proposito: documenta el defecto sin
-// romper la CI. Al arreglar settings.cpp este test pasara, Catch2 lo marcara
-// como fallo por pasar, y ahi se quita la etiqueta.
-TEST_CASE("unsignedH264Level deberia conservar el decimal del nivel",
-	  "[settings][h264][!shouldfail]") {
+// niveles enteros acertaba por casualidad, pero cualquier nivel con decimal
+// se degradaba en silencio al .0: 3.1 -> 30, 4.1 -> 40, 2.2 -> 20. Los
+// niveles 2.1, 2.2, 3.1, 3.2 y 4.1 estan en la lista de validos de
+// setH264Level, asi que se aceptaban y se aplicaban mal.
+TEST_CASE("unsignedH264Level conserva el decimal del nivel", "[settings][h264]") {
 	CHECK(TranscoderSettings::unsignedH264Level(3.1f) == 31u);
 	CHECK(TranscoderSettings::unsignedH264Level(2.1f) == 21u);
 	CHECK(TranscoderSettings::unsignedH264Level(2.2f) == 22u);
+	CHECK(TranscoderSettings::unsignedH264Level(3.2f) == 32u);
+	CHECK(TranscoderSettings::unsignedH264Level(4.1f) == 41u);
+}
+
+TEST_CASE("setH264Level acepta los niveles fraccionarios validos", "[settings][h264]") {
+	TranscoderSettings t;
+	for (const float nivel : {1.0f, 1.1f, 1.2f, 1.3f, 2.0f, 2.1f, 2.2f,
+				  3.0f, 3.1f, 3.2f, 4.0f, 4.1f}) {
+		CHECK_NOTHROW(t.setH264Level(nivel));
+		CHECK(t.getH264Level() == nivel);
+	}
 }
 
 TEST_CASE("setH264Level y getH264Level son consistentes", "[settings][h264]") {

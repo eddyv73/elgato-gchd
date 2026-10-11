@@ -55,6 +55,7 @@ mejor noticia del análisis y cambia el perfil de riesgo de todo el plan.
 |---|---|
 | GCC 13 + C++11 | OK |
 | GCC 13 + C++17 / C++20 / C++23 | **OK, 0 errores** |
+| Estándar adoptado | **C++20** (lo exige `std::span`, ver §2.4) |
 | Clang 18 + C++17 | **OK, 0 errores** |
 
 No hay deuda que bloquee el salto de estándar. Hay **una** trampa: `utility.cpp` usa
@@ -76,18 +77,48 @@ flujo de datos** de GCC/Clang. Esa pasada concluyó que no había nada más que 
 cosmético, y era una conclusión incorrecta. Recompilando en `RelWithDebInfo` con GCC 13
 y Clang 18 aparecen **defectos reales**:
 
-| Defecto | Ubicación | Severidad |
-|---|---|---|
-| Desreferencia de `shared_ptr` nulo | `gchd/psi_pmt.cpp:111-113` | **cierta** |
-| `state` leído sin inicializar | `gchd/configure.cpp:44,66` | **cierta** (rama) |
-| Retorno de `fread()` ignorado al cargar firmware | `gchd/commands.cpp:548` | alta |
-| Retorno de `write()` ignorado | `fifo.cpp:58`, `socket.cpp:102` | media |
-| `autodetectResolution` sin inicializar | `gchd/configure_composite.cpp:53` | media |
-| `bitRateMode` sin inicializar | `gchd/transcoder.cpp:457` | media |
-| `ret` sin inicializar | `main.cpp:726` | media |
-| Destructor no virtual en jerarquía polimórfica | `gchd/psi_descriptors.hpp` (11 clases) | latente |
-| `std::modf` con los nombres invertidos: todo nivel H.264 con decimal se degrada | `gchd/settings.cpp:538` | **cierta** |
-| Constructor que ignora su parámetro `currentIndicator` | `gchd/psi_syntax.hpp:31` | media |
+El inventario final, tras cerrar la Fase 1, son **20 defectos**, todos corregidos. Los
+10 primeros salieron de compilar con optimización; los 10 restantes los destapó el propio
+proceso de escribir los tests y de calibrar el análisis estático.
+
+| # | Defecto | Ubicación | Severidad |
+|---|---|---|---|
+| 1 | Desreferencia de `shared_ptr` nulo. **SIGSEGV reproducido**, ruta viva | `gchd/psi_pmt.cpp:111` | **crítica** |
+| 2 | `fopen` sin comprobar: firmware ilegible → `fseek(nullptr)` | `gchd/commands.cpp:526` | **crítica** |
+| 3 | `std::modf` con los nombres invertidos: todo nivel H.264 con decimal se degrada | `gchd/settings.cpp:538` | **cierta** |
+| 4 | `state` leído sin inicializar: decide si cargar el firmware | `gchd/configure.cpp:44` | **cierta** |
+| 5 | 3 registros sin inicializar; `sendEnableState()` los **envía al dispositivo** | `gchd.hpp:52-53,217` | **cierta** |
+| 6 | `struct sigaction` sin inicializar: `sa_mask` y `sa_flags` indefinidos | `fifo.cpp:24` | **cierta** |
+| 7 | `unpackInternal` no avanza el iterador (2 clases) → parseo roto | `gchd/psi_descriptors.cpp:114,134` | **cierta** |
+| 8 | `PSI_UnknownDescriptor` sin `packInternal`: pierde su carga al reempaquetar | `gchd/psi_descriptors.hpp` | **cierta** |
+| 9 | `ftell`/`fseek` sin comprobar: carga cero bytes de firmware en silencio | `gchd/commands.cpp:530` | alta |
+| 10 | Retorno de `fread()` ignorado al cargar firmware | `gchd/commands.cpp:548` | alta |
+| 11 | Destructor no virtual en la jerarquía polimórfica (11 clases) | `gchd/psi_data.hpp` | alta |
+| 12 | Constructores por defecto AVC: 21 miembros sin inicializar | `gchd/psi_descriptors.hpp:122,164` | alta |
+| 13 | Retorno de `write()` ignorado: pérdida silenciosa de transport stream | `fifo.cpp`, `socket.cpp` | media |
+| 14 | Constructor que ignora su parámetro `currentIndicator` | `gchd/psi_syntax.hpp:31` | media |
+| 15 | `PSI_Descriptor()` deja `tag_` sin inicializar | `gchd/psi_descriptors.hpp:35` | media |
+| 16 | `autodetectResolution` sin inicializar | `gchd/configure_composite.cpp:26` | media |
+| 17 | `bitRateMode` sin inicializar | `gchd/transcoder.cpp:328` | media |
+| 18 | `ret` sin inicializar | `main.cpp:719` | media |
+| 19 | `ES_info_length` sin validar contra el tamaño disponible | `gchd/psi_pmt.cpp:85` | media |
+| 20 | Autoasignaciones `x = trim(x)` | `utility.cpp:99,118` | baja |
+
+**Tres hallazgos quedan documentados y SIN tocar, a propósito:**
+
+- `configure.cpp:1304` lee `status` y acto seguido calcula la máscara sobre `value`, no
+  sobre `status`, mientras que la estructura paralela siete líneas arriba sí usa
+  `status & 0x10`. Huele a copia-pega mal terminada, pero **cambiarlo altera los bytes
+  que van al dispositivo** y no hay forma de saber cuál de las dos variantes es la
+  correcta sin el aparato. Marcado en el código para resolverlo con el oráculo de la
+  Fase 2, que es exactamente para esto.
+- `main.cpp:230`: la opción `-P/-pid` se parsea y se guarda, pero `Process::createPid()`
+  **no se llama en ningún sitio**. La opción documentada en la ayuda no hace nada, y el
+  cerrojo que evita dos instancias simultáneas es código muerto. Conectarlo cambia el
+  comportamiento en ejecución: es decisión de producto.
+- El `switch` sobre los magic numbers del dispositivo en `configure.cpp:131` no tiene
+  `default`. Añadir uno que lance podría romper un dispositivo que hoy funciona.
+- Menor: `--help` sale por `stderr`; debería ir a `stdout`.
 
 Tres merecen detalle:
 
@@ -128,10 +159,12 @@ aceptan sin queja y se aplican mal. Verificado con un programa mínimo aparte.
 lo reporta como `used uninitialized whenever 'if' condition is false`.
 
 **Conclusión revisada.** El veredicto de fondo no cambia — no hay gestión manual de
-memoria, no es un rescate de código legacy, y el repo sigue siendo recuperable. Pero
-**no está "notablemente sano"**: tiene 10 defectos identificados, tres de ellos ciertos,
-y uno en la ruta de carga de firmware. Esto **sube el valor de la Fase 1**, no lo baja:
-son hallazgos que una CI con optimización activada habría detectado en 2016.
+memoria, no es un rescate de código legacy, y el repo era recuperable. Pero **no estaba
+"notablemente sano"**: tenía 20 defectos, dos de ellos capaces de provocar un segfault
+(uno reproducido), tres en la ruta de carga de firmware y uno que **enviaba memoria sin
+inicializar al dispositivo**. Nada de esto requiere hardware para encontrarse: lo
+encontró una CI con optimización activada, 55 tests y análisis estático calibrado. Es la
+medida más clara del valor de la Fase 1 — y de lo que cuesta diez años sin CI.
 
 **Implicación para el pipeline:** la CI debe compilar en `RelWithDebInfo` o equivalente.
 Un job que compile sin optimizar da verde y oculta exactamente esta clase de defectos.
@@ -290,45 +323,63 @@ El orden no es negociable: **la red de seguridad va antes del refactor.**
 **Resultado:** compila con GCC 13 y Clang 18, 0 errores, inmune a CMake 4, CI en verde.
 **Subproducto:** la CI con optimización activada destapó los 8 defectos de §2.3.
 
-### Fase 1 — Red de seguridad · ~1-2 semanas · sin hardware · 🔄 EN CURSO
-1. 🔄 Tests unitarios sobre la capa pura (Catch2 v3.9.1 vía `FetchContent`).
-   **Hecho:** `gchd_core`, librería estática con los 9 archivos que no tocan
-   hardware, separada para que los tests enlacen sin libusb ni dispositivo; si
-   alguien mete una dependencia de hardware ahí, el target de tests deja de
-   compilar, que es justo el aviso que queremos. **33 tests, 171 asserts, en verde**,
-   más un job de CI con ASan+UBSan.
-   - `utility.cpp`: `byteify`/`debyteify` big-endian (orden de bytes explícito,
-     truncado por límite, ida y vuelta con valores frontera), `findFraction`,
-     `split`, trims, y los 7 casos documentados de `splitIPAddressAndPort`.
-   - `settings.cpp`: `convertResolution` en ambos sentidos y su inversa, defaults de
-     `InputSettings`, aritmética mbps↔kbps de bitrate constante y variable,
-     `getRealMaxBitRateKbps` por modo, niveles y perfiles H.264.
-   - `psi_*`: PAT byte a byte contra ISO/IEC 13818-1, validación de rangos de PID,
-     ida y vuelta pack/unpack, y el **test de contrato tamaño/empaquetado** descrito
-     abajo.
-   **Pendiente:** cobertura de PMT, SIT y descriptores, que son las clases con más
-   lógica de serialización y las que aún no tienen red.
+### Fase 1 — Red de seguridad · ~1-2 semanas · sin hardware · ✅ HECHA
 
-   El test de mayor valor es el de contrato: verifica que `pack()` avanza el iterador
-   **exactamente** `calculateSize()` bytes. Como `PSI_Data::bytes()` dimensiona el
-   vector con `calculateSize()` y `pack()` escribe avanzando un puntero crudo, una
-   desincronización de un byte es un desbordamiento de heap. Comprobar el avance lo
-   detecta de forma determinista, sin depender de que haya un sanitizer activo.
-   Resultado actual: PAT, cabecera y sección de sintaxis **cumplen** su contrato,
-   verificado también bajo ASan.
-2. **Migrar `byteify`/`debyteify` a `std::span`** (ver §2.4). Cierra la clase de bug de
-   desbordamiento de heap en los 25 call sites sin cota, con el compilador localizando
-   cada uno. Añadir `assert` de que `pack()` avanza exactamente `calculateSize()` bytes.
-   Máxima prioridad de la fase.
-3. **Arreglar los 8 defectos de §2.3**, en este orden y cada uno con su test de
-   regresión delante: `make_shared` en `psi_pmt.cpp:111`; inicializar `state`,
-   `autodetectResolution`, `bitRateMode` y `ret`; comprobar el retorno de `fread()` en
-   la carga de firmware y de `write()` en fifo/socket; `virtual ~PSI_Descriptor()` en
-   la jerarquía de descriptores.
-4. Arreglar los 60 warnings, eliminar las supresiones del CMake, activar `-Werror` en CI.
-5. `clang-tidy` + `cppcheck` + ASan/UBSan sobre el binario de tests en CI.
+**1. Separación de `gchd_core`.** Librería estática con los 9 archivos que no tocan
+hardware (`utility`, `settings` y las 7 clases PSI), para que los tests enlacen sin
+libusb ni dispositivo. Si alguien introduce ahí una dependencia de hardware, el target
+de tests deja de compilar: ese es el aviso.
 
-**Resultado:** ~2.700 LOC bajo test sin tocar el hardware, análisis estático en el pipeline.
+**2. 55 tests, 321 asserts, en verde** (Catch2 v3.9.1 vía `FetchContent`), con GCC 13 y
+Clang 18, en `RelWithDebInfo` y en `Debug` con ASan+UBSan.
+
+- `utility`: orden de bytes big-endian, truncado por límite, ida y vuelta con valores
+  frontera, `findFraction`, `split`, trims, los 7 casos documentados de
+  `splitIPAddressAndPort`, y la cota nueva de `span`.
+- `settings`: `convertResolution` en ambos sentidos y su inversa, defaults de
+  `InputSettings`, aritmética mbps↔kbps de bitrate constante y variable,
+  `getRealMaxBitRateKbps` por modo, niveles y perfiles H.264.
+- `psi`: PAT, PMT, SIT y los seis tipos de descriptor — byte a byte contra
+  ISO/IEC 13818-1, validación de rangos de PID, ida y vuelta pack/unpack, y el test de
+  contrato descrito abajo.
+
+**3. El test de contrato tamaño/empaquetado cumplió su función.** Verifica que `pack()`
+avanza el iterador **exactamente** `calculateSize()` bytes. Como `PSI_Data::bytes()`
+dimensiona el vector con `calculateSize()` y `pack()` escribe avanzando un puntero, una
+desincronización de un byte es un desbordamiento de heap. No es teoría: **disparó** y
+destapó que `PSI_UnknownDescriptor` declaraba 2+N bytes y sólo escribía 2, perdiendo su
+carga en silencio (defecto 8).
+
+**4. Migración a `std::span` completada**, los 36 puntos de llamada. Diseño clave: **el
+span acota, no trunca.** El truncado deliberado se sigue expresando con `limit`, de modo
+que los bytes producidos son idénticos; lo que cambia es que un buffer corto lanza
+`std::out_of_range` en vez de corromper memoria. La equivalencia byte a byte del nuevo
+`byteify` se verificó aparte, exhaustivamente sobre todos los valores y límites — esa es
+la garantía para la capa de hardware, donde no hay tests. Y la prueba de que la clase de
+bug está cerrada es que **un puntero crudo ya no compila** como argumento.
+
+**5. Los 20 defectos de §2.3, corregidos**, cada uno con test de regresión donde la capa
+es testeable. Tres quedan documentados y sin tocar a propósito, por la regla de no
+cambiar lo que no se puede verificar (ver §2.3).
+
+**6. Warnings a cero y `-Werror`.** Retiradas las tres supresiones heredadas. De los 60
+warnings quedaban 49 tras los arreglos; ahora son **0 con `-Wall -Wextra -Werror`** en
+GCC y Clang. Dos variables muertas se convirtieron en validación real en vez de
+borrarse.
+
+**7. Análisis estático en CI, bloqueante.** `clang-tidy` con un conjunto calibrado
+contra este árbol y `cppcheck`. La calibración importa: el conjunto completo daba **453
+avisos** (158 de `avoid-endl`, 140 de `const-correctness`), y un gate con 453 avisos no
+lo atiende nadie. El conjunto bloqueante es `clang-analyzer-*` y `bugprone-*` sin las
+categorías de estilo; los pocos casos que no se tocan llevan `NOLINT` **con su
+justificación escrita en el código**, no silenciados a ciegas. Resultado: **0 y 0**.
+
+**Resultado:** ~2.700 LOC bajo test, 0 warnings con `-Werror`, análisis estático limpio
+y bloqueante, sanitizers en CI, y 20 defectos corregidos. La CI son 4 jobs: Linux
+gcc/clang, ASan+UBSan y análisis estático bloqueantes, macOS informativo.
+
+**Pendiente, deliberadamente fuera:** la GUI (workstream aparte, decisión del equipo) y
+los tres hallazgos que requieren el oráculo de la Fase 2 para resolverse.
 
 ### Fase 2 — Testabilidad del hardware · ~2 semanas · ⚠ REQUIERE EL DISPOSITIVO
 Esta fase es la **puerta go/no-go** del proyecto.
@@ -372,8 +423,8 @@ Esta fase es la **puerta go/no-go** del proyecto.
 
 | Fase | Esfuerzo (1 dev) | Hardware | Riesgo |
 |---|---|---|---|
-| 0 — Desbloquear | ~1 día | no | mínimo |
-| 1 — Red de seguridad | 1-2 semanas | no | bajo |
+| 0 — Desbloquear | ~1 día | no | mínimo | ✅ |
+| 1 — Red de seguridad | 1-2 semanas | no | bajo | ✅ |
 | 2 — Testabilidad HW | ~2 semanas | **sí** | medio |
 | 3 — Refactor | 3-4 semanas | sí (validación) | alto sin Fase 2 |
 | 4 — Distribución | ~1 semana | no | bajo |
@@ -466,19 +517,35 @@ en un proyecto de 9.4k LOC cuesta más de lo que aporta.
 
 ---
 
-## 8. Anexo — comandos de reproducción
+## 8. Anexo — comandos
 
 ```bash
-# dependencia (Ubuntu/Debian)
-apt-get install -y libusb-1.0-0-dev
+# dependencias (Ubuntu/Debian)
+sudo apt-get install -y libusb-1.0-0-dev pkg-config cmake clang-tidy cppcheck
 
-# reproducir el fallo actual (12 errores en settings.cpp)
-mkdir build && cd build && cmake .. && make
+# build y tests, como en CI
+cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGCHD_WERROR=ON
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
 
-# demostrar que es el único bloqueo, sin modificar archivos
-cmake .. -DCMAKE_CXX_FLAGS="-std=c++11 -include cstdint" && make   # -> 0 errores
+# sanitizers
+cmake -S . -B build-san -DCMAKE_BUILD_TYPE=Debug -DGCHD_SANITIZE=ON
+cmake --build build-san --parallel && ctest --test-dir build-san
 
-# auditoría de warnings sin las supresiones del CMakeLists
-g++ -std=c++17 -include cstdint -Isrc -Wall -Wextra -fsyntax-only \
-    $(find src -path src/gui -prune -o -name '*.cpp' -print)       # -> 60 warnings
+# analisis estatico (el conjunto bloqueante esta en .clang-tidy)
+cmake -S . -B build-tidy -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DGCHD_BUILD_TESTS=OFF
+clang-tidy -p build-tidy $(find src -name '*.cpp' -not -path 'src/gui/*')
+cppcheck --enable=warning,portability --inline-suppr --std=c++20 \
+         --language=c++ --quiet --error-exitcode=1 -I src \
+         $(find src -name '*.cpp' -not -path 'src/gui/*')
+```
+
+**Opciones de CMake:** `GCHD_BUILD_TESTS` (ON), `GCHD_WERROR` (OFF),
+`GCHD_SANITIZE` (OFF).
+
+**Para reproducir el estado original** y ver de dónde se partió:
+
+```bash
+git checkout e5bc6b9        # ultimo commit de 2016
+mkdir build && cd build && cmake .. && make   # 12 errores en settings.cpp
 ```

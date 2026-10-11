@@ -35,14 +35,12 @@ int PAT_Entry::calculateSize()
 void PAT_Entry::pack(std::vector<uint8_t> &outputData,
 		     std::vector<uint8_t>::iterator &offset)
 {
-	uint8_t *dataPointer = &(*offset);
-	Utility::byteify<uint16_t>( dataPointer,  this->programNumber_ );
+	Utility::byteify<uint16_t>( Utility::remaining(outputData, offset), this->programNumber_ );
 	offset+=2;
 
 	uint16_t value = this->pid_;
 	value |= 0x7<<13; //Top 3 bits are reserved.
-	dataPointer = &(*offset);
-	Utility::byteify<uint16_t>( dataPointer,  value );
+	Utility::byteify<uint16_t>( Utility::remaining(outputData, offset), value );
 	offset+=2;
 }
 
@@ -53,11 +51,8 @@ void PAT_Entry::unpack( const std::vector<uint8_t> &inputData,
 	if( size < 4) {
 		throw PSI_FormatException("Cannot unpack PAT entry in less than 4 bytes.");
 	}
-	const uint8_t *dataPointer=&(*offset);
-	std::vector<uint8_t>::const_iterator endOfDataOffset=offset+size;
-
-	programNumber_=Utility::debyteify<uint16_t>( dataPointer );
-	uint16_t value=Utility::debyteify<uint16_t>( dataPointer+2 );
+	programNumber_=Utility::debyteify<uint16_t>( Utility::remaining(inputData, offset) );
+	uint16_t value=Utility::debyteify<uint16_t>( Utility::remaining(inputData, offset+2) );
 	pid_ = value & ((1<<13)-1);
 	//Only reason I check this is because the purpose of the unpack code
 	//is to validate our own packing, not to decode actual streams.

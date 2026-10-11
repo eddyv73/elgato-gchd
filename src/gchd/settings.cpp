@@ -533,12 +533,16 @@ H264Profile TranscoderSettings::getH264Profile() {
 }
 
 unsigned TranscoderSettings::unsignedH264Level(float value) {
+	//std::modf devuelve la parte fraccionaria y escribe la entera en el
+	//puntero que recibe. La version anterior asignaba el retorno a una
+	//variable llamada "integerF" y la salida a otra llamada "fractionF",
+	//con los nombres invertidos: acertaba por casualidad en los niveles
+	//enteros y degradaba al .0 cualquier nivel con decimal (3.1 -> 30).
 	float integerF;
-	float fractionF;
-	integerF=std::modf(value, &fractionF);
-	unsigned integer=(unsigned)integerF;
+	float fractionF=std::modf(value, &integerF);
 
-	unsigned fraction=(int)round( fractionF / .1 );
+	unsigned integer=(unsigned)integerF;
+	unsigned fraction=(unsigned)std::lround( fractionF / .1 );
 	return integer*10+fraction;
 }
 

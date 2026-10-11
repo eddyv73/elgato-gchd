@@ -40,8 +40,8 @@ void PSI_Descriptor::pack(std::vector<uint8_t> &outputData,
 }
 
 //override this
-void PSI_Descriptor::packInternal(std::vector<uint8_t> &outputData,
-				  std::vector<uint8_t>::iterator &offset)
+void PSI_Descriptor::packInternal([[maybe_unused]] std::vector<uint8_t> &outputData,
+				  [[maybe_unused]] std::vector<uint8_t>::iterator &offset)
 {
 }
 
@@ -61,9 +61,9 @@ void PSI_Descriptor::unpack(const std::vector<uint8_t> &inputData,
 };
 
 //Override this.
-void PSI_Descriptor::unpackInternal(const std::vector<uint8_t> &inputData,
-				    std::vector<uint8_t>::const_iterator &offset,
-				    int size)
+void PSI_Descriptor::unpackInternal([[maybe_unused]] const std::vector<uint8_t> &inputData,
+				    [[maybe_unused]] std::vector<uint8_t>::const_iterator &offset,
+				    [[maybe_unused]] int size)
 {
 	//Do nothing by default.
 }
@@ -106,12 +106,25 @@ int PSI_UnknownDescriptor::calculateSizeInternal()
 	return this->data.size();
 }
 
-void PSI_UnknownDescriptor::unpackInternal(const std::vector<uint8_t> &inputData,
+void PSI_UnknownDescriptor::packInternal([[maybe_unused]] std::vector<uint8_t> &outputData,
+					std::vector<uint8_t>::iterator &offset)
+{
+	std::copy_n( data.begin(), data.size(), offset );
+	offset += data.size();
+}
+
+void PSI_UnknownDescriptor::unpackInternal([[maybe_unused]] const std::vector<uint8_t> &inputData,
 					   std::vector<uint8_t>::const_iterator &offset,
 					   int size)
 {
 	this->data.resize(size);
 	std::copy_n( offset, size, this->data.begin() );
+	//El contrato de unpackInternal es dejar offset pasado el descriptor; las
+	//implementaciones de AVC lo cumplen con *offset++ y offset+=4. Aqui
+	//copy_n no mueve el iterador, asi que habia que avanzarlo a mano. Sin
+	//esto, el bucle de descriptores de PMT y SIT reinterpretaba la carga
+	//como un descriptor nuevo y lanzaba "PSI Descriptor length mismatch".
+	offset += size;
 }
 
 int PSI_ProgramDescriptor::calculateSizeInternal()
@@ -119,19 +132,22 @@ int PSI_ProgramDescriptor::calculateSizeInternal()
 	return data_.size();
 }
 
-void PSI_ProgramDescriptor::packInternal(std::vector<uint8_t> &outputData,
+void PSI_ProgramDescriptor::packInternal([[maybe_unused]] std::vector<uint8_t> &outputData,
 					 std::vector<uint8_t>::iterator &offset)
 {
 	std::copy_n(data_.begin(), data_.size(), offset);
 	offset+=data_.size();
 }
 
-void PSI_ProgramDescriptor::unpackInternal(const std::vector<uint8_t> &inputData,
+void PSI_ProgramDescriptor::unpackInternal([[maybe_unused]] const std::vector<uint8_t> &inputData,
 					   std::vector<uint8_t>::const_iterator &offset,
 					   int size )
 {
 	data_.resize(size);
 	std::copy_n( offset, size, data_.begin() );
+	//Mismo caso que en PSI_UnknownDescriptor::unpackInternal: copy_n no
+	//avanza el iterador y el contrato exige dejarlo pasado el descriptor.
+	offset += size;
 }
 
 PSI_AVC_VideoDescriptor::PSI_AVC_VideoDescriptor( uint8_t profile_idc,
@@ -166,7 +182,7 @@ int PSI_AVC_VideoDescriptor::calculateSizeInternal()
 	return 4; //4 bytes to code everything.
 }
 
-void PSI_AVC_VideoDescriptor::packInternal(std::vector<uint8_t> &outputData,
+void PSI_AVC_VideoDescriptor::packInternal([[maybe_unused]] std::vector<uint8_t> &outputData,
 					   std::vector<uint8_t>::iterator &offset)
 {
 	*offset++=profile_idc_;
@@ -192,7 +208,7 @@ void PSI_AVC_VideoDescriptor::packInternal(std::vector<uint8_t> &outputData,
 	*offset++=miscellaneousFlags;
 }
 
-void PSI_AVC_VideoDescriptor::unpackInternal(const std::vector<uint8_t> &inputData,
+void PSI_AVC_VideoDescriptor::unpackInternal([[maybe_unused]] const std::vector<uint8_t> &inputData,
 					     std::vector<uint8_t>::const_iterator &offset,
 					     int size )
 {
@@ -267,12 +283,12 @@ void PSI_AVC_TimingAndHRDDescriptor::packInternal
 
 		*offset++=flags;
 		if (!kHz90_flag_) {
-			Utility::byteify<uint32_t>( &(*offset), N_ );
+			Utility::byteify<uint32_t>( Utility::remaining(outputData, offset), N_ );
 			offset+=4;
-			Utility::byteify<uint32_t>( &(*offset), K_ );
+			Utility::byteify<uint32_t>( Utility::remaining(outputData, offset), K_ );
 			offset+=4;
 		}
-		Utility::byteify<uint32_t>( &(*offset), num_units_in_tick_ );
+		Utility::byteify<uint32_t>( Utility::remaining(outputData, offset), num_units_in_tick_ );
 		offset+=4;
 	}
 	flags = (fixed_frame_rate_flag_ << 7 ) |
@@ -310,16 +326,16 @@ void PSI_AVC_TimingAndHRDDescriptor::unpackInternal
 			if (size < 15) {
 				throw PSI_FormatException( "AVC timing and HRD descriptor must be at least 15 with custom clock configuration." );
 			}
-			N_ = Utility::debyteify<uint32_t>( &(*offset) );
+			N_ = Utility::debyteify<uint32_t>( Utility::remaining(inputData, offset) );
 			offset+=4;
-			K_ = Utility::debyteify<uint32_t>( &(*offset) );
+			K_ = Utility::debyteify<uint32_t>( Utility::remaining(inputData, offset) );
 			offset+=4;
 		}
 		else {
 			N_ = 1;
 			K_ = 300;
 		}
-		num_units_in_tick_ = Utility::debyteify<uint32_t>( &(*offset) );
+		num_units_in_tick_ = Utility::debyteify<uint32_t>( Utility::remaining(inputData, offset) );
 		offset+=4;
 	}
 	else {
@@ -343,7 +359,7 @@ int PSI_HDMV_CopyControlDescriptor::calculateSizeInternal()
 	return 4;
 }
 
-void PSI_HDMV_CopyControlDescriptor::packInternal(std::vector<uint8_t> &outputData,
+void PSI_HDMV_CopyControlDescriptor::packInternal([[maybe_unused]] std::vector<uint8_t> &outputData,
 						  std::vector<uint8_t>::iterator &offset)
 {
 	*offset++=0x0f;
@@ -359,7 +375,7 @@ void PSI_HDMV_CopyControlDescriptor::unpackInternal(const std::vector<uint8_t> &
 	if( size < 4) {
 		throw PSI_FormatException( "HDMV copy control descriptor is invalid.");
 	}
-	uint32_t value=Utility::debyteify<uint32_t>(&(*offset));
+	uint32_t value=Utility::debyteify<uint32_t>(Utility::remaining(inputData, offset));
 	offset+=4;
 	if(value != 0x0ffffcfc) {
 		throw PSI_FormatException( "HDMV copy control descriptor is not set to default.");

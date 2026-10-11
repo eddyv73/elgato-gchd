@@ -6,6 +6,8 @@
  */
 
 #include <csignal>
+#include <cerrno>
+#include <cstring>
 #include <iostream>
 
 #include <fcntl.h>
@@ -19,7 +21,10 @@ int Fifo::enable(std::string output) {
 	output_ = output;
 
 	// ignore SIGPIPE, else program terminates on unsuccessful write()
-	struct sigaction ignore;
+	//Las llaves son imprescindibles: sin ellas sa_mask y sa_flags quedaban
+	//indefinidos y se pasaban a sigaction(). process.cpp lo hace asi y lo
+	//deja comentado explicitamente; aqui faltaba.
+	struct sigaction ignore{};
 	ignore.sa_handler = SIG_IGN;
 	sigaction(SIGPIPE, &ignore, nullptr);
 
@@ -55,7 +60,14 @@ void Fifo::output(std::vector<unsigned char> *buffer) {
 		return;
 	}
 
-	write(fd_, buffer->data(), buffer->size());
+	const ssize_t written = write(fd_, buffer->data(), buffer->size());
+	if (written < 0) {
+		std::cerr << "Write to FIFO failed: " << std::strerror(errno) << std::endl;
+	} else if (static_cast<size_t>(written) != buffer->size()) {
+		//Una escritura parcial son bytes de transport stream perdidos.
+		std::cerr << "Short write to FIFO: " << written << " of "
+			  << buffer->size() << " bytes." << std::endl;
+	}
 }
 
 Fifo::Fifo() {

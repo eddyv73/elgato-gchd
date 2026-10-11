@@ -38,7 +38,7 @@ void PSI_TableHeader::pack( std::vector<uint8_t> &outputData, std::vector<uint8_
 		throw PSI_ValueException("A sectionLength value is set too high in a PSI table header.");
 	}
 	value |= sectionLength;
-	Utility::byteify<uint16_t>(&(*offset), value);
+	Utility::byteify<uint16_t>(Utility::remaining(outputData, offset), value);
 
 	offset+=2;
 }
@@ -56,7 +56,7 @@ void PSI_TableHeader::unpack(const std::vector<uint8_t> &data,
 
 	tableID_=*offset++;
 
-	uint16_t value=Utility::debyteify<uint16_t>(&(*offset));
+	uint16_t value=Utility::debyteify<uint16_t>(Utility::remaining(data, offset));
 	offset+=2;
 
 	sectionSyntaxIndicator_ = (value>>15) & 1;

@@ -49,8 +49,11 @@ class GCHD {
 		std::string firmwareEnc_;
 		struct libusb_device_handle *devh_;
 
-		uint16_t savedEnableRegister_;
-		uint16_t savedEnableStateRegister_;
+		//Inicializados aqui: el constructor no los tocaba, y
+		//sendEnableState() escribe savedEnableStateRegister_ al
+		//dispositivo, de modo que le enviaba memoria sin inicializar.
+		uint16_t savedEnableRegister_ = 0;
+		uint16_t savedEnableStateRegister_ = 0;
 
 		int checkFirmware();
 		int openDevice(); //At USB level
@@ -109,7 +112,7 @@ class GCHD {
 
 			size_t size=std::min((size_t)wLength, sizeof(T));
 			/* Big endian reconstruct */
-			T value=Utility::debyteify<T>(recv.data(), size);
+			T value=Utility::debyteify<T>(recv, size);
 			return value;
 		}
 
@@ -138,7 +141,7 @@ class GCHD {
 		template<typename T>
 		void write_config(uint8_t bRequest, uint16_t wValue, uint16_t wIndex, T value, uint16_t wLength=sizeof(T)) {
 			std::vector<unsigned char> send=std::vector<unsigned char>(wLength);
-			Utility::byteify<T>( send.data(), value, wLength );
+			Utility::byteify<T>( send, value, wLength );
 
 			int returnSize=
 					libusb_control_transfer(devh_, 0x40, bRequest, wValue, wIndex, send.data(), wLength, 0);
@@ -214,7 +217,7 @@ class GCHD {
 		TranscoderSettings passedTranscoderSettings_;
 		TranscoderSettings currentTranscoderSettings_;
 
-		uint16_t specialDetectMask_;
+		uint16_t specialDetectMask_ = 0;
 
 
 };

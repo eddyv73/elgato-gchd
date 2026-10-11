@@ -13,6 +13,8 @@
  */
 
 #include "psi_syntax.hpp"
+#include <span>
+
 #include "psi_exceptions.hpp"
 #include "psi_pmt.hpp"
 #include "../utility.hpp"
@@ -41,15 +43,19 @@ int PMT_Mapping::calculateSize()
 void PMT_Mapping::pack(std::vector<uint8_t> &outputData,
 		       std::vector<uint8_t>::iterator &offset)
 {
-	uint8_t *dataPointer = &(*offset);
-	*dataPointer++=streamType_;
-	offset+=1;
 	if( elementaryPid_ >= 1<<13 ) {
 		throw PSI_ValueException("elementaryPID in PMT_Mapping has value bigger than 13 bits.");
 	}
+
+	std::span<uint8_t> salida=Utility::remaining(outputData, offset);
+	if( salida.size() < 5 ) {
+		throw PSI_ValueException("Not enough room to pack a PMT_Mapping.");
+	}
+	salida[0]=streamType_;
+	offset+=1;
+
 	uint16_t value=(0x7<<13) | elementaryPid_;
-	Utility::byteify<uint16_t>( dataPointer,  value );
-	dataPointer+=2;
+	Utility::byteify<uint16_t>( salida.subspan(1),  value );
 	offset+=2;
 
 	unsigned descriptorLength=0;
@@ -61,8 +67,7 @@ void PMT_Mapping::pack(std::vector<uint8_t> &outputData,
 	}
 
 	value = (0xf<<12) | descriptorLength;
-	Utility::byteify<uint16_t>( dataPointer, value );
-	dataPointer+=2;
+	Utility::byteify<uint16_t>( salida.subspan(3), value );
 	offset+=2;
 
 	for( unsigned i=0; i< descriptors_.size(); ++i) {
@@ -79,11 +84,14 @@ void PMT_Mapping::unpack( const std::vector<uint8_t> &inputData,
 	}
 	std::vector<uint8_t>::const_iterator endOfDataOffset=offset+size;
 
-	const uint8_t *dataPointer=&(*offset);
-	streamType_ = *dataPointer++;
+	std::span<const uint8_t> entrada=Utility::remaining(inputData, offset);
+	if( entrada.size() < 5 ) {
+		throw PSI_FormatException("Not enough data to unpack a PMT_Mapping.");
+	}
+	streamType_ = entrada[0];
 	offset+=1;
 
-	uint16_t value=Utility::debyteify<uint16_t>( dataPointer );
+	uint16_t value=Utility::debyteify<uint16_t>( entrada.subspan(1) );
 	elementaryPid_ = value & ((1<<13)-1);
 
 	//Only reason I check this is because the purpose of the unpack code
@@ -91,24 +99,29 @@ void PMT_Mapping::unpack( const std::vector<uint8_t> &inputData,
 	if ((value >> 13) != 0x7) {
 		throw PSI_FormatException("Reserved bits in PMT_Mapping are not set.");
 	}
-	dataPointer+=2;
 	offset+=2;
 
-	value=Utility::debyteify<uint16_t>( dataPointer );
+	value=Utility::debyteify<uint16_t>( entrada.subspan(3) );
 	uint16_t es_info_length = value & ((1<<10)-1);
 
 	if ((value >> 10) != 0x3c) { //4 set bits, followed by 2 clear bits.
 		throw PSI_FormatException("Reserved bits in PMT_Mapping are not set.");
 	}
-	dataPointer+=2;
 	offset +=2;
 	std::vector<uint8_t>::const_iterator endOfDescriptors = offset + es_info_length;
+
+	//endOfDataOffset estaba calculado y sin usar. Comprobarlo convierte un
+	//ES_info_length mentiroso en un error en vez de una lectura mas alla de
+	//los datos que el llamador declaro.
+	if( endOfDescriptors > endOfDataOffset ) {
+		throw PSI_FormatException("ES_info_length in PMT_Mapping exceeds the available data.");
+	}
 
 	//Reset descriptors__
 	descriptors_ = std::vector< std::shared_ptr<PSI_Descriptor> >();
 
 	while(offset < endOfDescriptors) {
-		auto descriptor=std::shared_ptr<PSI_ParseDescriptor>();
+		auto descriptor=std::make_shared<PSI_ParseDescriptor>();
 		descriptor->unpack(inputData, offset, endOfDescriptors-offset);
 		descriptors_.push_back( descriptor->getParsedDescriptor() );
 	}
@@ -153,7 +166,7 @@ void PMT_Data::pack(std::vector<uint8_t> &outputData,
 		throw PSI_ValueException("PCR_PID value in PMT is bigger than 13 bits.");
 	}
 	uint16_t value=(0x7<<13) | pcrPid_;
-	Utility::byteify<uint16_t>( &(*offset), value );
+	Utility::byteify<uint16_t>( Utility::remaining(outputData, offset), value );
 	offset+=2;
 
 	uint16_t programInfoLength=0;
@@ -164,7 +177,7 @@ void PMT_Data::pack(std::vector<uint8_t> &outputData,
 		throw PSI_ValueException("program_info_length in PMT_Data is larger than 10 bits.");
 	}
 	value=programInfoLength | (0xf<<12);
-	Utility::byteify<uint16_t>( &(*offset), value );
+	Utility::byteify<uint16_t>( Utility::remaining(outputData, offset), value );
 	offset+=2;
 
 	//Output programInfo.
@@ -190,14 +203,14 @@ void PMT_Data::unpack( const std::vector<uint8_t> &inputData,
 
 	std::vector<uint8_t>::const_iterator endOffset=offset+size;
 
-	uint16_t value=Utility::debyteify<uint16_t>( &(*offset) );
+	uint16_t value=Utility::debyteify<uint16_t>( Utility::remaining(inputData, offset) );
 	offset+=2;
 	if(( value >> 13 ) != 7) {
 		throw PSI_FormatException("PSI PMT reserved bits not set correctly.");
 	}
 	pcrPid_=value & ((1<<13)-1);
 
-	value=Utility::debyteify<uint16_t>( &(*offset) );
+	value=Utility::debyteify<uint16_t>( Utility::remaining(inputData, offset) );
 	offset+=2;
 	//This is a strict checker used to check itself, so
 	//we don't ignore reserved bits.

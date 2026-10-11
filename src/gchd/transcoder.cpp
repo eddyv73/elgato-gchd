@@ -325,7 +325,7 @@ void GCHD::transcoderSetup(InputSettings &inputSettings, TranscoderSettings &set
 
 	//Think this sets whether we are using constant or variable bit rate.
 	//I believe 0 is constant bit rate, 1 is variable, but 2 bit field....
-	uint8_t bitRateMode;
+	uint8_t bitRateMode=0; //Por defecto, bit rate constante.
 	switch( settings.getBitRateMode() ) {
 		case BitRateMode::Constant:
 			bitRateMode=0;
@@ -593,7 +593,7 @@ void GCHD::transcoderOutputEnable(bool value)
 }
 
 using namespace Transcoder;
-void GCHD::transcoderFinalConfigure(InputSettings &inputSettings, TranscoderSettings &settings)
+void GCHD::transcoderFinalConfigure(InputSettings &inputSettings, [[maybe_unused]] TranscoderSettings &settings)
 {
 	transcoderWriteVideoAndAudioPids();
 	sparam( dma_sel_out, 1 );

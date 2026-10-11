@@ -23,7 +23,7 @@ void GCHD::configureComposite()
 
 	ScanMode autodetectScanMode=ScanMode::Interlaced;
 	double autodetectRefreshRate=0.0;
-	Resolution autodetectResolution;
+	Resolution autodetectResolution=Resolution::Unknown;
 	try {
 		if( value == 6 ) {
 			autodetectResolution = Resolution::NTSC;

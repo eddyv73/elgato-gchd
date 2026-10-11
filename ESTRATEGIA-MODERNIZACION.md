@@ -80,7 +80,44 @@ ingeniería inversa de 2016 escrito sin CI, **está notablemente sano**: `std::v
 `std::array`, excepciones, RAII, `nullptr`. Sin `malloc`, sin `strcpy`, sin `goto`,
 3 `new` en total. **No es un rescate de código legacy; es un repo sano y abandonado.**
 
-### 2.4. Bomba de tiempo a corto plazo
+### 2.4. Superficie real de seguridad de memoria
+
+Medición explícita, porque es el dato que decide la pregunta "¿reescribir en Rust?".
+
+**Lo que NO hay** (deuda típica de C++ legacy, ausente aquí): 0 `malloc`, 0 `free`,
+0 `memcpy`/`memmove`, 0 `strcpy`/`strncpy`/`snprintf`, 0 indexación cruda con índice
+calculado, 1 solo `reinterpret_cast` (`disk.cpp:37`, benigno: `vector<uint8_t>` a
+`char*` para `ostream::write`). 3 `new` y 1 `delete` en 9.390 LOC.
+
+**Lo que SÍ hay** — un único patrón, sistemático y real:
+`Utility::byteify` / `debyteify` (`utility.hpp`) son plantillas que serializan en
+big-endian **a través de un puntero/iterador crudo sin cota**:
+
+```cpp
+template<typename T, typename I>
+static void byteify(I iterator, T value, unsigned limit=UINT_MAX)
+```
+
+De **36 call sites, 25 no pasan `limit`** → el límite por defecto es `UINT_MAX` y la
+escritura de `sizeof(T)` bytes no está acotada por nada. Los punteros se obtienen como
+`&(*offset)`, `&data[0]`, `send+4` — ninguno lleva consigo su tamaño.
+
+Peor: en la capa PSI la corrección depende de un contrato mantenido a mano. Cada clase
+implementa `calculateSize()` y `pack()` por separado (ej. `psi_syntax.cpp:15`: devuelve
+un `5` literal) y `pack()` escribe avanzando el puntero a mano. **Si `calculateSize()` y
+`pack()` se desincronizan en un byte, hay desbordamiento de heap**, en 7 clases PSI.
+
+Esta es una clase de bug genuina, y es exactamente la que Rust elimina por construcción.
+**Pero el cierre en C++ es mecánico y lo fuerza el compilador:** cambiar la firma a
+`std::span<uint8_t>` obliga a los 36 call sites a aportar una cota, y el compilador los
+localiza todos. Añadiendo un `assert` de que `pack()` avanzó exactamente
+`calculateSize()` bytes, más los tests de golden file de la Fase 1, la clase queda
+cerrada **y verificada sin hardware**, porque la capa PSI es pura.
+
+Coste estimado: días. Es la tarea de mayor retorno de seguridad de todo el plan y entra
+en la Fase 1 como prioridad.
+
+### 2.5. Bomba de tiempo a corto plazo
 
 `cmake_minimum_required(VERSION 2.8.11)` ya emite deprecation warning en CMake 3.28 y es
 **error fatal en CMake 4.x**, que eliminó la compatibilidad por debajo de 3.5. En cuanto
@@ -186,9 +223,13 @@ El orden no es negociable: **la red de seguridad va antes del refactor.**
      determinista y verificable contra la norma ITU/ISO. **El mejor ROI del proyecto.**
    - `settings.cpp`: parseo de resolución, bitrate (`max:avg:min`), niveles H.264.
    - `utility.cpp`: `byteify`/`debyteify` big-endian, trims.
-2. Arreglar los 60 warnings, eliminar las supresiones del CMake, activar `-Werror` en CI.
-3. Reemplazar `ptr_fun`/`not1` por lambdas (desbloquea libc++ y C++17 estricto).
-4. `clang-tidy` + `cppcheck` + ASan/UBSan sobre el binario de tests en CI.
+2. **Migrar `byteify`/`debyteify` a `std::span`** (ver §2.4). Cierra la clase de bug de
+   desbordamiento de heap en los 25 call sites sin cota, con el compilador localizando
+   cada uno. Añadir `assert` de que `pack()` avanza exactamente `calculateSize()` bytes.
+   Máxima prioridad de la fase.
+3. Arreglar los 60 warnings, eliminar las supresiones del CMake, activar `-Werror` en CI.
+4. Reemplazar `ptr_fun`/`not1` por lambdas (desbloquea libc++ y C++17 estricto).
+5. `clang-tidy` + `cppcheck` + ASan/UBSan sobre el binario de tests en CI.
 
 **Resultado:** ~2.700 LOC bajo test sin tocar el hardware, análisis estático en el pipeline.
 
@@ -255,7 +296,78 @@ Esta fase es la **puerta go/no-go** del proyecto.
 
 ---
 
-## 7. Anexo — comandos de reproducción
+## 7. Decisión de lenguaje: ¿Rust o seguimos en C/C++?
+
+**Recomendación: seguir en C++, y no cerrar la decisión todavía — aún no toca.**
+
+### 7.1. Descartado de entrada: C
+
+Pasar de C++ a C es una regresión. El código ya usa `vector`, `array`, plantillas,
+excepciones y RAII; en C habría que reimplementar todo eso a mano y reintroducir
+precisamente la gestión manual de memoria que este repositorio **no** tiene. No hay caso.
+
+### 7.2. Lo que Rust compraría de verdad
+
+No es un argumento vacío; hay tres ventajas reales:
+
+1. **La clase de bug de §2.4 desaparece por construcción.** Los slices llevan su longitud;
+   escribir fuera de rango es un panic determinista, no corrupción de heap silenciosa.
+2. **Multiplataforma real.** `nusb` es USB en Rust puro, sin dependencia de C, con soporte
+   Linux / Windows / macOS / Android y transferencias control, bulk e interrupt — justo lo
+   que usa este driver. Eliminaría `libusb` + `pkg-config` + `getopt_long_only` (GNU) +
+   POSIX a pelo, que es lo que hoy hace que el soporte macOS prometido en el README sea
+   ficción (cero guardas de plataforma en todo el árbol).
+3. **Cadena de herramientas.** `cargo test` / `clippy` / `cargo build` es una historia
+   mucho más amable para un equipo con perfil .NET/devops que CMake + CTest + clang-tidy
+   + pkg-config.
+
+### 7.3. Por qué igualmente gana C++
+
+1. **El activo del repositorio no es el código: es el conocimiento de ingeniería inversa.**
+   696 LOC de definiciones de registros, secuencias USB y transiciones de máquina de
+   estados obtenidas sondeando hardware. Una reescritura transcribe esos valores a mano
+   **sin forma de verificar la transcripción**. Un dígito hexadecimal mal copiado no da
+   error de compilación: da un dispositivo que no arranca, y sólo se detecta con el
+   aparato físico delante.
+2. **La ganancia de seguridad se captura al 90% por ~1% del coste.** La migración a
+   `std::span` de §2.4 cierra la misma clase de bug en días, y ya verifiqué que el árbol
+   compila limpio en C++20, así que `span` está disponible hoy.
+3. **Coste desproporcionado.** Reescribir 9.390 LOC equivale a 2-3x el plan completo de
+   Fases 0-4, para llegar al **mismo** resultado funcional.
+4. **Mal primer proyecto en Rust.** Si el objetivo colateral es que el equipo aprenda
+   Rust, un driver USB de ingeniería inversa, sin tests y sin hardware para validar, es
+   el peor vehículo posible para hacerlo.
+
+### 7.4. La razón por la que la decisión no es urgente
+
+**Las Fases 0, 1 y 2 son idénticas en ambos escenarios.** Y la Fase 2 produce exactamente
+el artefacto que haría responsable una reescritura: el arnés de *record/replay* es un
+**oráculo de conformidad**. Con una traza USB real grabada, cualquier reimplementación
+—en Rust o en C++ refactorizado— se valida comparando su tráfico USB byte a byte contra
+la grabación.
+
+Sin ese oráculo, una reescritura en Rust es código no verificable: cambia bugs de memoria
+que el código probablemente no está sufriendo por bugs de transcripción que no puedes
+detectar. Con el oráculo, pasa a ser una opción legítima.
+
+Por tanto: **construir el oráculo primero (va en el plan de todos modos) y revisitar la
+pregunta al final de la Fase 2**, con datos en lugar de preferencias.
+
+### 7.5. Cuándo sí reescribiría en Rust
+
+Un único escenario lo justifica de salida: **si el objetivo real es soporte multiplataforma
+de primera clase** (macOS y Windows, no sólo Linux). Retrofittear guardas de plataforma,
+sustituir `getopt_long_only` y abstraer POSIX en el C++ actual es más trabajo y más frágil
+que partir de `nusb` + `clap`. Incluso en ese caso: **después del oráculo, no antes.**
+
+Nota sobre reescritura parcial: la capa PSI/MPEG-TS (~1.100 LOC, pura, con salida binaria
+determinista) es el único bloque reescribible hoy con verificación completa por golden
+files y sin hardware. Aun así no lo haría: convivir con cargo + CMake y una frontera FFI
+en un proyecto de 9.4k LOC cuesta más de lo que aporta.
+
+---
+
+## 8. Anexo — comandos de reproducción
 
 ```bash
 # dependencia (Ubuntu/Debian)

@@ -261,3 +261,129 @@ verificable y con el hardware en la mano**. Y la Fase 2 —colapsar 148 parámet
 es trabajo de ingeniería acotado, de alto valor y sin incógnitas de investigación.
 
 Si sale mal, el coste de haberlo averiguado es de dos días.
+
+---
+
+## 9. ¿Construir el firmware de cero?
+
+**Respuesta corta: no de cero — pero no hace falta, porque el userspace de la tarjeta
+ya es vuestro.** La pregunta correcta no es "construirlo", es "modificarlo", y eso sí
+está sobre la mesa.
+
+### 9.1. Lo que la tarjeta es por dentro
+
+| | |
+|---|---|
+| SoC | **SL6010**, ARM, front-end agnóstico (la doc del proyecto dice ARMv5 en un sitio y ARMv7 en otro — a confirmar) |
+| Arranque | **desde flash onboard, al dar corriente al slot**, sin ayuda del host |
+| Imagen | `MZ0380.HD.HEX` = **gzip + tar** → rootfs `yuan_demo_sdi/` completo. **Sin firmar, sin cifrar** |
+| Contenido | kernel + `ep.ko` (mailbox PCIe, **ARM ELF no stripped**), `tinyvenc`, `video_capture_mgr`, `audio_capture_mgr`, `yuan_ioctrl`, `yuan_start_process.sh` |
+| Front-end HDMI | **MStar MST3367**, por I²C — **lo inicializa el HOST**, no el firmware |
+| Versión | 01.11, **byte-idéntica a la imagen retail de Elgato** (md5 `616643fb…`) |
+
+### 9.2. El dato que decide: el firmware es un proxy de registros, a propósito
+
+`yuan_ioctrl` **no lleva hardcodeado ni un solo valor de registro del receptor**.
+Arranca, abre `/dev/gv7601`, `/dev/i2c-0,1` y `/sys/vpl_pciep/command`, y se queda
+bloqueado en `poll()` esperando órdenes del host. Cada escritura de registro del
+receptor la suministra **el host** por el mailbox (op 0x18/0x19 SPI, 0x1a/0x1b I²C).
+
+O sea: **la inteligencia ya vive en el lado host.** Reescribir el firmware no te da
+nada del front-end, porque el front-end no lo controla el firmware.
+
+Y la imagen que corre **es la correcta**: byte-idéntica a la retail. No hay nada que
+arreglar ahí.
+
+### 9.3. Lo que costaría "de cero", y por qué no
+
+Habría que reimplementar, para el SL6010:
+
+1. El BSP de Linux (init de DDR, relojes, arranque) — necesitaríais las fuentes del
+   kernel de YUAN.
+2. `vpl_vic.ko`, el driver del VIC que recibe BT.1120 del receptor.
+3. `ep.ko`, el mailbox PCIe — este es el único que está bien documentado, porque no
+   viene stripped.
+4. **El stack del encoder H.264** (`tinyvenc` y los `vma_*` sobre la VPU del SoC).
+
+El punto 4 es el que mata la idea. Reverse-engineerizar una VPU es trabajo de **años**:
+mirad lo que costó Cedrus con Allwinner, o los VPU de Rockchip y Amlogic. Y el premio
+sería llegar a donde ya está la imagen de fábrica. **No tiene retorno.**
+
+### 9.4. Lo que SÍ compra modificar la imagen: el wedge
+
+Hay exactamente **una** cosa que ningún cambio en el host puede arreglar y la imagen sí:
+
+**El wedge es un defecto del userspace de la tarjeta.** La fuga está en el ciclo de vida
+de `video_capture_mgr` + `tinyvenc5` — el propio RE localizó dos `system("killall -9
+tinyvenc5")` en `video_capture_mgr` (0x8d1c y 0x95c4). Ningún reset PCIe lo limpia
+(M52): solo quitar corriente. Es decir, **es el único defecto conocido que obliga a
+tocar la tarjeta para resolverlo de raíz.**
+
+Y es alcanzable, porque:
+
+- La imagen es un **tar plano sin firmar**: se desempaqueta, se modifica
+  `yuan_start_process.sh` o el binario, y se reempaqueta.
+- La **subida está verificada en hardware** (M2 PASS): `BEGIN_FW_DL` (0x0b) → blob
+  word a word a `BAR0+0x60` → `COMMIT_FW` (0x0c) → ~21 s de boot → `STATUS` =
+  `0xdddddddd` y el mailbox responde.
+- **Hay camino de recuperación documentado:** la tarjeta conserva
+  `/mnt/flash/yuan_demo_sdi_bak` y `yuan_update_only.sh`.
+- El propio RE lo resume sin rodeos: *"We therefore own the card's userspace."*
+
+Nota: `audio_capture_mgr` **ya está en la imagen**, así que la carencia de audio es
+probablemente más de host que de tarjeta. Eso rebaja el atractivo de tocar el firmware
+para conseguir audio.
+
+### 9.5. La ganancia barata e inmediata de esta área
+
+Independiente de todo lo anterior: `video_capture_mgr` expone **op 0x6e (LOAD_FILES)**,
+una lectura/escritura de 16 bytes a offset arbitrario sobre una ruta fija,
+`/mnt/flash/PIC_ENC`. No es transferencia de ficheros general — es un **canal para
+paginar un log**.
+
+Con **una línea** en `yuan_start_process.sh` que redirija el stdout/stderr de
+`tinyvenc5` y `video_capture_mgr` a ese fichero, se puede leer **lo que la tarjeta
+imprime por dentro**, por PCIe, sin acceso físico. El transporte ya está probado
+(M76/M77: "op 0x6e round-trips cleanly"); lo que falta es crear el fichero.
+
+Para depurar el wedge, eso es la diferencia entre adivinar y leer. Pero ojo: exige
+modificar la imagen y subirla, así que carga con el mismo riesgo que §9.4.
+
+### 9.6. Riesgos, y la decisión que hay que tomar antes
+
+1. **El proyecto borró la ruta de subida a propósito** (M97), y lo dejó escrito en
+   `mz0380-fw.c`: *"NO FIRMWARE IS EVER UPLOADED… It is a standing project
+   constraint"*, por los ~21 s por `insmod` y por ser *"a way to brick the card"*.
+   Es la decisión de quien más sabe del asunto, y cuenta como señal. Cualquier trabajo
+   de firmware sale de ahí: es un fork de intención, no una contribución natural.
+2. **Tenéis UNA tarjeta.** Una tarjeta = un brick = proyecto terminado. **La compra de
+   más valor del proyecto entero es una segunda HD60 Pro de segunda mano**, antes de
+   tocar nada de firmware. Barata, y convierte un riesgo existencial en un
+   inconveniente.
+3. **Palanca legal gratis: la tarjeta corre Linux.** Eso son obligaciones **GPL**, así
+   que YUAN está obligada a entregar las fuentes del kernel de la tarjeta si se las
+   pedís. Es gratis, no tiene riesgo y desactivaría buena parte de la dificultad del
+   §9.3. Y encaja con la due diligence de procedencia del §6.2: pedir fuentes es
+   justo lo contrario de decompilar.
+4. **Lo que no pude verificar:** si `COMMIT_FW` escribe en flash (persistente, y por
+   tanto brickeable) o en RAM (volátil, y entonces un apagón restaura). Las pistas
+   apuntan a flash — el nombre "COMMIT", los 21 s de boot, y el log de Windows
+   *"TOTAL DOWNLOAD TIMES"*, que suena a contador persistente — pero es hipótesis.
+   **Confirmarlo es el primer paso de cualquier plan de firmware**, y se confirma
+   leyendo `ep.ko`, que no viene stripped.
+
+### 9.7. Recomendación
+
+**No ahora, y nunca de cero.**
+
+- **De cero: descartado.** Reimplementar el encoder sobre la VPU del SL6010 son años
+  para llegar a donde ya está la imagen de fábrica.
+- **Modificación dirigida: sí, pero en Fase 3+**, y solo con tres condiciones cumplidas:
+  una línea base funcionando y validada (Fase 0), **una segunda tarjeta**, y haber
+  confirmado si el commit toca flash o RAM.
+- **Ahora mismo:** pedir las fuentes GPL a YUAN. Cuesta un correo y puede cambiar el
+  cálculo de todo lo demás.
+
+El orden importa: el wedge **no bloquea el uso normal** (§2), así que no hay ninguna
+urgencia en tocar la tarjeta. Lo que sí hay es mucho valor en las Fases 0 a 2, que son
+puro host y riesgo cero para el hardware.

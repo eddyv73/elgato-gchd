@@ -123,22 +123,27 @@ documentar el paso manual de extracción.
 - `getopt_long_only` es extensión GNU. Sustituirlo por CLI11 (header-only) hace realista
   el soporte macOS/BSD. Encaja de forma natural con A1.
 
-## Trabajo pendiente — Vía B: solo con el dispositivo físico
+## Vía B: CANCELADA — el hardware disponible no es compatible
 
-No empieces nada de esto sin confirmar que hay una **Game Capture HD de primera
-generación** disponible (product IDs `0x0044`, `0x004e`, `0x0051`, `0x005d`; las
-HD60 / HD60 S / HD60 Pro **no** están soportadas y usan otra interfaz).
+**No existe.** El dispositivo que tiene el equipo es una **Elgato Game Capture HD60
+Pro**, que es una tarjeta **PCIe** (YUAN MZ0380, PCI `12ab:0380`/`12ab:0381`, mailbox por
+BAR0, SoC ARM con su propio firmware a bordo). Este repositorio es un driver **USB** vía
+libusb para la Game Capture HD de primera generación, y el README ya la listaba como no
+soportada desde 2016.
 
-1. Grabar la traza USB real completa: init, carga de firmware, configuración
-   HDMI/componente/compuesto y streaming.
-2. Resolver el hallazgo marcado en `src/gchd/configure.cpp:1304`, donde la máscara se
-   calcula sobre `value` y no sobre el `status` que se acaba de leer, mientras la
-   estructura paralela siete líneas arriba sí usa `status`. Está marcado con `NOLINT` y
-   un comentario. Se resuelve comparando la secuencia USB real contra la grabación.
-3. Fase 3: descomponer la god-class `GCHD` (60+ métodos privados, un `friend class`, y
-   mezcla transporte USB, máquina de estados, configuración por entrada y transcoder).
-   El propio autor dejó el diagnóstico en `src/gchd.hpp:34`. **Solo con el oráculo de la
-   Fase 2 funcionando.**
+Los 4.835 LOC de capa USB de este árbol no sirven para esa tarjeta. **No intentes añadir
+soporte para la HD60 Pro aquí**: no es una extensión, es otro driver en otro bus.
+
+Lo que era la Fase 2 (grabar y reproducir tráfico USB) no tiene objeto, así que las
+**Fases 2, 3 y 4 quedan canceladas**, no aplazadas. Ver §4.0 del documento de estrategia.
+
+Si alguien pregunta por la HD60 Pro en Linux, la vía es otro proyecto:
+`Wolffyx/hd60pro-linux-driver` (módulo de kernel `mz0380`, GPL-2.0, V4L2). No es trabajo
+de este repositorio.
+
+**Este repositorio se considera terminado en la Fase 1.** Solo quedan las tareas de la
+Vía A, y solo si el equipo decide seguir manteniéndolo para quien tenga la Game Capture
+HD original.
 
 ## Fuera de alcance
 

@@ -249,6 +249,61 @@ de cualquier refactor estructural — y el que **no se puede tocar a ciegas**.
 
 Esto es lo que hay que decidir **antes** de escribir código, no después.
 
+### 4.0. RESUELTO — el gate go/no-go: el hardware disponible es una HD60 Pro
+
+**El dispositivo que hay en el equipo es una Elgato Game Capture HD60 Pro, y eso cierra
+este repositorio como vía para usarla.** No es una limitación superable con esfuerzo: es
+otro aparato, en otro bus, con otro plano de control.
+
+| | Este repo (Game Capture HD, 1ª gen) | HD60 Pro |
+|---|---|---|
+| Bus | **USB** vía libusb | **PCIe** |
+| Identificación | Vendor Elgato `0x0fd9`, PIDs `0044`/`004e`/`0051`/`005d` | **YUAN MZ0380**, PCI `12ab:0380` / `12ab:0381` |
+| Plano de control | Transferencias de control USB | **Mailbox por BAR0** + DMA |
+| Encoder | Fujitsu MB86H57/H58 | SoC **ARM con su propio Linux** a bordo |
+| Receptor HDMI | integrado en el flujo USB | **MST3367**, inicializado por el host |
+| Firmware | lo **sube el host** (extraído del MSI de Windows) | **reside en la tarjeta**; el driver no lo sube |
+
+Consecuencia directa: **los 4.835 LOC de capa USB de este árbol** (`gchd.cpp`,
+`commands.cpp`, los cuatro `configure*.cpp`, `transcoder.cpp` y `gchd_hardware.hpp`) no
+sirven para la HD60 Pro. Ni una línea. Y el README del repo ya la listaba como no
+soportada desde 2016.
+
+**Por tanto las Fases 2, 3 y 4 de este plan quedan canceladas**, no aplazadas. La Fase 2
+era grabar y reproducir tráfico USB; aquí no hay tráfico USB que grabar. El gate que
+definí en §4.1 se ha resuelto, y se ha resuelto en **no-go**.
+
+**Lo que sí sobrevive.** Las Fases 0 y 1 están cerradas y tienen valor por sí mismas: el
+repo compila con toolchains actuales, tiene 55 tests, 0 warnings con `-Werror`, análisis
+estático bloqueante y 20 defectos corregidos. Es un repositorio mantenible para quien
+tenga la Game Capture HD original — que es un fork activo con varios derivados. Pero
+**para el objetivo del equipo es una vía muerta**, y el punto de parada honesto es
+exactamente el que anticipó §6: terminar la Fase 1 y no entrar en el refactor.
+
+**La vía real para la HD60 Pro es otro proyecto.** Existe un driver de kernel
+out-of-tree, `mz0380` (repo `Wolffyx/hd60pro-linux-driver`, GPL-2.0), que expone la
+tarjeta como dispositivo V4L2. Según su propio README, no verificado por nosotros:
+
+- Captura **1080p H.264 persistente** funcionando en OBS, y cumplimiento V4L2 148/148.
+- **Sin audio**: `enable_audio=1` solo registra un andamiaje ALSA inerte.
+- **Solo 1920x1080**; otras resoluciones no implementadas.
+- **Fallo operativo conocido y serio**: el mailbox de la tarjeta se atasca en torno a
+  **8-18 arranques de encoder por ciclo de alimentación real**.
+- Requiere un dominio **IOMMU traductor** (`iommu=off` y `iommu=pt` no funcionan),
+  cabeceras del kernel y, con Secure Boot, firma del módulo.
+- Sin DKMS consolidado, sin paquetes de distribución y **sin envío a mainline**.
+- 158 commits, 8 estrellas, 2 issues abiertos. Validado contra Linux 6.18 LTS y 7.2.
+- Su README se contradice en dos puntos (DKMS, captura en crudo), señal de documentación
+  que ha derivado respecto al código.
+
+**Ventaja no obvia frente a este repo:** el firmware vive en la tarjeta, así que
+desaparece el bloqueo legal de §4.2 — no hay que extraer nada del instalador de Elgato ni
+hay problema de redistribución.
+
+**Y la asimetría que decide:** para este repositorio no hay dispositivo con el que
+validar nada. Para `mz0380` **sí lo hay**. Eso invierte por completo el cálculo de
+riesgo: el trabajo que allí se haga es verificable.
+
 ### 4.1. Bloqueo nº1 — Validación funcional exige el dispositivo físico
 
 Ninguna CI puede probar que este driver *funciona*. Puede probar que compila, que la lógica
@@ -425,9 +480,9 @@ Esta fase es la **puerta go/no-go** del proyecto.
 |---|---|---|---|
 | 0 — Desbloquear | ~1 día | no | mínimo | ✅ |
 | 1 — Red de seguridad | 1-2 semanas | no | bajo | ✅ |
-| 2 — Testabilidad HW | ~2 semanas | **sí** | medio |
-| 3 — Refactor | 3-4 semanas | sí (validación) | alto sin Fase 2 |
-| 4 — Distribución | ~1 semana | no | bajo |
+| 2 — Testabilidad HW | ~2 semanas | **sí** | medio | ❌ cancelada (ver §4.0) |
+| 3 — Refactor | 3-4 semanas | sí (validación) | alto sin Fase 2 | ❌ cancelada |
+| 4 — Distribución | ~1 semana | no | bajo | ⏸ sin objeto para el equipo |
 | **Total** | **~7-9 semanas** | | |
 
 **Recomendación:**

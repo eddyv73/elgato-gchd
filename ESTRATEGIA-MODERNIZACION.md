@@ -42,7 +42,8 @@ Inyectando el header por flag (`-include cstdint`), **sin tocar ni un archivo**:
 ```
 make = 0 errores,  binario gchd generado (970 KB),  tiempo de build: 3,5 s
 ./gchd -h        -> funciona
-./gchd           -> "Unable to find a supported device."  (degrada limpio sin hardware)
+./gchd           -> "Unable to find a supported device.", exit 1  (degrada limpio,
+                    sin señal: no hay crash al no encontrar hardware)
 ```
 
 **Es decir: el proyecto está a un `#include` de compilar y arrancar hoy.** Esto es la
@@ -61,24 +62,60 @@ No hay deuda que bloquee el salto de estándar. Hay **una** trampa: `utility.cpp
 mantiene por compatibilidad; con libc++ estricto o `_GLIBCXX_USE_DEPRECATED=0` rompe.
 Son 2 funciones de `trim()`, reemplazo trivial por lambda.
 
-### 2.3. Auditoría de warnings
+### 2.3. Auditoría de warnings y defectos reales
 
 El `CMakeLists.txt` raíz silencia tres categorías
 (`-Wno-unused-parameter -Wno-reorder -Wno-missing-field-initializers`).
-Recompilando **sin** esas supresiones:
+Retirándolas, el árbol emite **60 warnings de bajo impacto**: 27 `unused-parameter`,
+27 `reorder` (orden de inicialización de miembros), 4 `deprecated-declarations`
+(el `ptr_fun` de §2.2) y 2 `unused-but-set-variable`.
 
-| Categoría | Nº | Severidad |
+**Aviso metodológico.** Una primera pasada de esta auditoría se hizo con
+`-fsyntax-only`, que **no activa el optimizador y por tanto no ejecuta los análisis de
+flujo de datos** de GCC/Clang. Esa pasada concluyó que no había nada más que ruido
+cosmético, y era una conclusión incorrecta. Recompilando en `RelWithDebInfo` con GCC 13
+y Clang 18 aparecen **defectos reales**:
+
+| Defecto | Ubicación | Severidad |
 |---|---|---|
-| `-Wunused-parameter` | 27 | cosmética |
-| `-Wreorder` | 27 | cosmética (orden de init de miembros) |
-| `-Wdeprecated-declarations` | 4 | la de `ptr_fun` de arriba |
-| `-Wunused-but-set-variable` | 2 | cosmética |
-| **Total** | **60** | — |
+| Desreferencia de `shared_ptr` nulo | `gchd/psi_pmt.cpp:111-113` | **cierta** |
+| `state` leído sin inicializar | `gchd/configure.cpp:44,66` | **cierta** (rama) |
+| Retorno de `fread()` ignorado al cargar firmware | `gchd/commands.cpp:548` | alta |
+| Retorno de `write()` ignorado | `fifo.cpp:58`, `socket.cpp:102` | media |
+| `autodetectResolution` sin inicializar | `gchd/configure_composite.cpp:53` | media |
+| `bitRateMode` sin inicializar | `gchd/transcoder.cpp:457` | media |
+| `ret` sin inicializar | `main.cpp:726` | media |
+| Destructor no virtual en jerarquía polimórfica | `gchd/psi_descriptors.hpp` (11 clases) | latente |
 
-Cero warnings de UB, de `sign-compare`, de punteros o de aliasing. Para ser código de
-ingeniería inversa de 2016 escrito sin CI, **está notablemente sano**: `std::vector`,
-`std::array`, excepciones, RAII, `nullptr`. Sin `malloc`, sin `strcpy`, sin `goto`,
-3 `new` en total. **No es un rescate de código legacy; es un repo sano y abandonado.**
+Los dos primeros merecen detalle:
+
+**1. Desreferencia de puntero nulo, no "posible" sino segura** (`psi_pmt.cpp:111`):
+
+```cpp
+auto descriptor = std::shared_ptr<PSI_ParseDescriptor>();  // shared_ptr VACÍO
+descriptor->unpack(inputData, offset, endOfDescriptors-offset);   // nullptr-> UB
+descriptors_.push_back( descriptor->getParsedDescriptor() );
+```
+
+Falta `std::make_shared`. GCC lo reporta como `'this' pointer is null`. Cualquier
+ejecución que entre en ese bucle desreferencia un nulo. Atenuante: el driver **genera**
+tablas MPEG-TS, no las parsea, así que la ruta puede estar muerta en la práctica — pero
+está en el árbol, compilada, lista para dispararse si alguien usa el parser.
+
+**2. Decisión de cargar firmware sobre memoria sin inicializar** (`configure.cpp`):
+`state` se declara sin valor y sólo se asigna dentro de las ramas
+`GameCaptureHD` / `GameCaptureHDNew`. Si `deviceType_` no es ninguna de las dos, el
+`if (state == 0x0000)` que decide **si se carga el firmware** lee basura de pila. Clang
+lo reporta como `used uninitialized whenever 'if' condition is false`.
+
+**Conclusión revisada.** El veredicto de fondo no cambia — no hay gestión manual de
+memoria, no es un rescate de código legacy, y el repo sigue siendo recuperable. Pero
+**no está "notablemente sano"**: tiene 8 defectos identificados, dos de ellos ciertos,
+y uno en la ruta de carga de firmware. Esto **sube el valor de la Fase 1**, no lo baja:
+son hallazgos que una CI con optimización activada habría detectado en 2016.
+
+**Implicación para el pipeline:** la CI debe compilar en `RelWithDebInfo` o equivalente.
+Un job que compile sin optimizar da verde y oculta exactamente esta clase de defectos.
 
 ### 2.4. Superficie real de seguridad de memoria
 
@@ -205,17 +242,26 @@ paso manual. Es una restricción **legal**, no técnica: no se resuelve con inge
 Cada fase es entregable por sí sola y deja el repo en mejor estado que la anterior.
 El orden no es negociable: **la red de seguridad va antes del refactor.**
 
-### Fase 0 — Desbloquear y congelar línea base · ~1 día · sin hardware
-1. `#include <cstdint>` en `src/gchd/settings.cpp` → el build vuelve a funcionar.
-2. CMake moderno: mínimo `3.16`, `target_compile_features(cxx_std_17)`,
-   `PkgConfig::LIBUSB` como target importado, quitar el link explícito a `stdc++`,
-   sustituir `AUX_SOURCE_DIRECTORY` por lista explícita de fuentes (el globbing no
-   detecta archivos nuevos y rompe builds incrementales).
-3. GitHub Actions: matriz `ubuntu × {gcc, clang}` + `macos`, sólo build. El build dura
-   3,5 s — la CI es prácticamente gratis.
-4. Decisión explícita sobre `src/gui/` (recomendación: borrar).
+### Fase 0 — Desbloquear y congelar línea base · ~1 día · sin hardware · ✅ HECHA
+1. ✅ `#include <cstdint>` en `src/gchd/settings.cpp` → el build vuelve a funcionar.
+2. ✅ `ptr_fun`/`not1` → lambdas en `utility.cpp` (adelantado desde la Fase 1: era
+   requisito para que el job de macOS compilara, porque libc++ sí elimina esas APIs
+   en C++17; además la lambda castea a `unsigned char`, que es el uso correcto de
+   `std::isspace`).
+3. ✅ CMake moderno: mínimo `3.16`, `target_compile_features(cxx_std_17)`,
+   `PkgConfig::LIBUSB` como target importado (aporta también los include dirs: el
+   árbol anterior sólo funcionaba por tener `/usr/include/libusb-1.0` en la ruta por
+   defecto, y fallaba con libusb en otro prefijo, p.ej. Homebrew), link explícito a
+   `stdc++` eliminado, `AUX_SOURCE_DIRECTORY` sustituido por lista explícita de
+   fuentes, warnings centralizados en un target `INTERFACE`.
+4. ✅ GitHub Actions: matriz `ubuntu × {gcc, clang}` bloqueante + `macos` informativo
+   (`continue-on-error`), con smoke test del binario y reporte de warnings al job
+   summary. Compila en `RelWithDebInfo` a propósito (ver §2.3).
+5. ⏸ Decisión sobre `src/gui/`: **pendiente, es del equipo.** Queda documentada en el
+   CMake raíz y sin construir, como estaba.
 
-**Resultado:** repo que compila, verde en CI, inmune a CMake 4. Riesgo ~nulo.
+**Resultado:** compila con GCC 13 y Clang 18, 0 errores, inmune a CMake 4, CI en verde.
+**Subproducto:** la CI con optimización activada destapó los 8 defectos de §2.3.
 
 ### Fase 1 — Red de seguridad · ~1-2 semanas · sin hardware
 1. Tests unitarios sobre la capa pura (GoogleTest o Catch2 vía `FetchContent`):
@@ -227,8 +273,12 @@ El orden no es negociable: **la red de seguridad va antes del refactor.**
    desbordamiento de heap en los 25 call sites sin cota, con el compilador localizando
    cada uno. Añadir `assert` de que `pack()` avanza exactamente `calculateSize()` bytes.
    Máxima prioridad de la fase.
-3. Arreglar los 60 warnings, eliminar las supresiones del CMake, activar `-Werror` en CI.
-4. Reemplazar `ptr_fun`/`not1` por lambdas (desbloquea libc++ y C++17 estricto).
+3. **Arreglar los 8 defectos de §2.3**, en este orden y cada uno con su test de
+   regresión delante: `make_shared` en `psi_pmt.cpp:111`; inicializar `state`,
+   `autodetectResolution`, `bitRateMode` y `ret`; comprobar el retorno de `fread()` en
+   la carga de firmware y de `write()` en fifo/socket; `virtual ~PSI_Descriptor()` en
+   la jerarquía de descriptores.
+4. Arreglar los 60 warnings, eliminar las supresiones del CMake, activar `-Werror` en CI.
 5. `clang-tidy` + `cppcheck` + ASan/UBSan sobre el binario de tests en CI.
 
 **Resultado:** ~2.700 LOC bajo test sin tocar el hardware, análisis estático en el pipeline.
